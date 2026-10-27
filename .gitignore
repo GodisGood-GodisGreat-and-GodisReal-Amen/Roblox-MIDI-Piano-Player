@@ -1,0 +1,7 @@
+# Built app and release zip (./build.sh)
+build/
+
+# Local working files that are not part of the project
+_archive/
+
+.DS_Store
