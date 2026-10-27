@@ -1,0 +1,23 @@
+name: check
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: JavaScript for Automation syntax
+        run: for f in src/main.js tools/*.js; do osacompile -l JavaScript -o "$RUNNER_TEMP/check.scpt" "$f"; done
+      - name: Shell and Python syntax
+        run: |
+          for f in build.sh app/RobloxMidiPianoPlayer tools/*.sh; do bash -n "$f"; done
+          python3 -m py_compile tools/genmidi.py
+      - name: The app's property list
+        run: plutil -lint app/Info.plist
+      - name: The demo songs are what tools/genmidi.py writes
+        run: |
+          python3 tools/genmidi.py --demos "$RUNNER_TEMP/demo"
+          for f in docs/demo/*.mid; do cmp "$f" "$RUNNER_TEMP/demo/$(basename "$f")"; done
+      - name: Engine tests
+        run: osascript -l JavaScript tools/engine_harness.js "$PWD/src/main.js"
+      - name: The app builds
+        run: ./build.sh --zip

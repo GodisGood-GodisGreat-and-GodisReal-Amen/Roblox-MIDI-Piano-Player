@@ -3,5 +3,6 @@ build/
 
 # Local working files that are not part of the project
 _archive/
+__pycache__/
 
 .DS_Store

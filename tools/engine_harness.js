@@ -1,7 +1,9 @@
-// Offline test of the playback engine with the extended (88-key) piano.
+// Offline test of the playback engine: the 61- and 88-key maps, chords,
+// modifiers, live speed and pause, all on a virtual clock (it takes a second).
 //
-//   osascript -l JavaScript engine_harness.js /path/to/main.js
+//   osascript -l JavaScript tools/engine_harness.js "$PWD/src/main.js"
 //
+// Exits with an error when a check fails.
 // Loads the real main.js, stubs the operating-system calls (clock, sleep, key
 // sender, stop file, state/log files) and drives the REAL buildSchedule +
 // performPlaybackToPid with synthetic songs. It then checks that every key was
@@ -337,6 +339,34 @@ function run(argv) {
   // 19: one speed range everywhere.
   check(sanitizeConfig({ speed: 3 }).speed === SPEED_MAX && sanitizeConfig({ speed: 0.1 }).speed === SPEED_MIN && sanitizeConfig({ speed: 0 }).speed === 1, "config speed clamped to " + SPEED_MIN + "-" + SPEED_MAX);
 
+  // 20-21: drum tracks (channel 10) are left out, unless they are all there is.
+  function midiBytes(tracks) {
+    function u32(n) { return String.fromCharCode((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255); }
+    function u16(n) { return String.fromCharCode((n >>> 8) & 255, n & 255); }
+    var out = "MThd" + u32(6) + u16(1) + u16(tracks.length) + u16(480);
+    for (var t = 0; t < tracks.length; t++) {
+      var body = "";
+      for (var e = 0; e < tracks[t].length; e++) {   // [delta < 128, status, data1, data2]
+        var ev = tracks[t][e];
+        body += String.fromCharCode(ev[0], ev[1], ev[2], ev[3]);
+      }
+      body += String.fromCharCode(0, 0xFF, 0x2F, 0);
+      out += "MTrk" + u32(body.length) + body;
+    }
+    return out;
+  }
+  function parseBytes(bytes) {
+    var path = ObjC.unwrap($.NSTemporaryDirectory()) + "rmpp-harness-" + Math.floor(Math.random() * 1e9) + ".mid";
+    $(bytes).writeToFileAtomicallyEncodingError($(path), true, $.NSISOLatin1StringEncoding, null);
+    try { return parseMIDIFile(path); } finally { $.NSFileManager.defaultManager.removeItemAtPathError($(path), null); }
+  }
+  var pianoTrack = [[0, 0x90, 60, 90], [100, 0x80, 60, 0], [0, 0x90, 64, 90], [100, 0x80, 64, 0]];
+  var drumTrack = [[0, 0x99, 36, 100], [10, 0x89, 36, 0], [90, 0x99, 38, 100], [10, 0x89, 38, 0], [0, 0x99, 42, 100], [10, 0x89, 42, 0]];
+  var mixed = parseBytes(midiBytes([pianoTrack, drumTrack]));
+  check(mixed.notes.length === 2 && mixed.drumNotes === 3 && mixed.notes[0].note === 60 && mixed.notes[1].note === 64, "drum hits are left out (" + mixed.notes.length + " notes kept, " + mixed.drumNotes + " drum hits)");
+  var drumsOnly = parseBytes(midiBytes([drumTrack]));
+  check(drumsOnly.notes.length === 3 && drumsOnly.drumNotes === 0, "a file with only channel 10 keeps its notes (" + drumsOnly.notes.length + ")");
+
   var out = ["Engine harness: " + (failures.length === 0 ? "ALL CHECKS PASSED" : failures.length + " FAILURE(S)")];
   for (var f = 0; f < failures.length; f++) out.push("  FAIL: " + failures[f]);
   out.push("  sweep timeline: first press t=" + (r3.rec.presses[0].t - 100).toFixed(3) + "s, last press t=" + (r3.rec.presses[87].t - 100).toFixed(3) + "s (scheduled 0.000 .. " + ((87 * 120) / 480 * 0.5).toFixed(3) + "s)");
@@ -344,5 +374,8 @@ function run(argv) {
   out.push("  live speed x2 at 2.1s: notes at " + t11.slice(6, 13).map(function(x) { return x.toFixed(3); }).join(", ") + " s");
   out.push("  pause 1.1s-4.1s: notes at " + t13.slice(3, 8).map(function(x) { return x.toFixed(3); }).join(", ") + " s");
   out.push("  speed x2 during a rest: second note at " + t14[1].toFixed(3) + " s (was 4.000)");
+  // A failure must make osascript exit with an error, so scripts and the CI
+  // check stop on it.
+  if (failures.length > 0) throw new Error(out.join("\n"));
   return out.join("\n");
 }

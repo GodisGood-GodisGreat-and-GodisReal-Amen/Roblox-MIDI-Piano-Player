@@ -30,6 +30,9 @@ cp app/Info.plist "$APP/Contents/Info.plist"
 cp app/RobloxMidiPianoPlayer "$APP/Contents/MacOS/RobloxMidiPianoPlayer"
 chmod 755 "$APP/Contents/MacOS/RobloxMidiPianoPlayer"
 cp src/main.js app/AppIcon.icns app/README.txt "$APP/Contents/Resources/"
+# The demo songs of File › Demo Songs.
+mkdir -p "$APP/Contents/Resources/demo"
+cp docs/demo/*.mid "$APP/Contents/Resources/demo/"
 /usr/bin/xattr -cr "$APP"
 echo "Built $APP (v$VERSION)"
 
@@ -42,7 +45,7 @@ for arg in "$@"; do
         # the bundle, so macOS keeps the Accessibility permission it gave it.
         cp "$APP/Contents/Info.plist" "$DEST/Contents/Info.plist"
         cp "$APP/Contents/MacOS/RobloxMidiPianoPlayer" "$DEST/Contents/MacOS/RobloxMidiPianoPlayer"
-        cp "$APP/Contents/Resources/"* "$DEST/Contents/Resources/"
+        cp -R "$APP/Contents/Resources/" "$DEST/Contents/Resources/"
         /usr/bin/touch "$DEST"
       else
         /usr/bin/ditto "$APP" "$DEST"

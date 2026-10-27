@@ -6,6 +6,7 @@ time, and lets you play the Roblox piano live from the app's window.
 
 Play a song
   1. Choose a MIDI file (button, File > Open MIDI, or drop it on the window).
+     No MIDI file at hand? Try File > Demo Songs.
   2. Pick the piano: Mode 1 = classic 61 keys (C2-C7), Mode 2 = full 88 keys
      (A0-C8, the dotted keys played with Ctrl).
   3. Click "Arm playback", then click the Roblox piano window once.
@@ -32,8 +33,9 @@ Permission
 Your settings, the playback log and the playback state are kept in
 ~/Library/Application Support/Roblox MIDI Piano Player/ ("Config folder").
 
-Source code, help and updates:
+The Help menu opens the user manual, the getting-started guide and the
+troubleshooting page online. Source code and updates:
 https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player
 
-Free and open source (public domain, see LICENSE in the source code).
+Free and open source (public domain, The Unlicense).
 Not affiliated with Roblox Corporation.

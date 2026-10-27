@@ -1,3 +1,19 @@
+// Roblox MIDI Piano Player — plays MIDI files on a Roblox piano, and lets you
+// play the Roblox piano live from its window.
+//
+// The whole app is this one JavaScript for Automation script, started by
+// osascript from the app bundle's launcher (app/RobloxMidiPianoPlayer).
+// The same file runs in two roles:
+//   * the window (mainWindowUI, at the end of the file): AppKit built from
+//     JavaScript; loads and maps songs, settings, live keys, live speed;
+//   * the background player (run --worker <job>, workerMain): waits for
+//     Roblox, then sends every chord's keys to the Roblox process.
+// They talk through small JSON files in ~/Library/Application Support/
+// Roblox MIDI Piano Player/. docs/architecture.md walks through the code.
+//
+// Public domain (The Unlicense). Not affiliated with Roblox Corporation.
+// https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player
+
 ObjC.import('Foundation');
 ObjC.import('AppKit');
 ObjC.import('ApplicationServices');
@@ -7,7 +23,7 @@ var app = Application.currentApplication();
 app.includeStandardAdditions = true;
 
 var APP_NAME = "Roblox MIDI Piano Player";
-var APP_VERSION = "2.1.0";
+var APP_VERSION = "2.1.1";
 var APP_REPO_URL = "https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player";
 var SUPPORT_DIR_NAME = "Roblox MIDI Piano Player";
 var WAIT_FOR_ROBLOX_PROMPT_SECONDS = 30;
@@ -662,7 +678,8 @@ function describeAutoDetectionMode(analysis) {
 
 
 // `options.language` ("en" / "fr") picks the language of the worker's
-// notifications; `options.quiet` turns them off (self tests).
+// notifications; `options.quiet` turns them off (self tests);
+// `options.songName` is the name shown (the file name otherwise).
 function armBackgroundPlayback(schedule, midiPath, supportDir, options) {
   options = options || {};
   ensureBackgroundPlaybackReady();
@@ -696,7 +713,7 @@ function armBackgroundPlayback(schedule, midiPath, supportDir, options) {
   var job = {
     jobId: jobId,
     supportDir: supportDir,
-    songName: basename(midiPath),
+    songName: options.songName ? String(options.songName) : basename(midiPath),
     midiPath: midiPath,
     language: normalizeUILanguage(options.language) === "fr" ? "fr" : "en",
     quiet: !!options.quiet,
@@ -2825,14 +2842,17 @@ function promptForBaseNoteOverride(currentBase, analysis, layoutLength) {
 
 
 
-function promptForText(title, message, defaultAnswer) {
+// `buttons` is [cancel, save] in the window's language (English by default).
+function promptForText(title, message, defaultAnswer, buttons) {
+  var cancel = buttons && buttons[0] ? String(buttons[0]) : "Cancel";
+  var save = buttons && buttons[1] ? String(buttons[1]) : "Save";
   try {
     var ans = app.displayDialog(message, {
       withTitle: title,
       defaultAnswer: defaultAnswer,
-      buttons: ["Cancel", "Save"],
-      defaultButton: "Save",
-      cancelButton: "Cancel",
+      buttons: [cancel, save],
+      defaultButton: save,
+      cancelButton: cancel,
       withIcon: "note"
     });
     return String(ans.textReturned);
@@ -3972,13 +3992,23 @@ function parseMIDIFile(path) {
     tempos = tempos.concat(parsed.tempos);
   }
 
+  // Drum tracks (MIDI channel 10) hold percussion sounds, not pitches: on the
+  // piano they would come out as stray notes. They are left out, unless the
+  // file has nothing else (some files put a melody on channel 10).
+  var drumNotes = 0;
+  var melodic = notes.filter(function(n) { return n.channel !== 9; });
+  if (melodic.length > 0 && melodic.length < notes.length) {
+    drumNotes = notes.length - melodic.length;
+    notes = melodic;
+  }
+
   notes.sort(function(a, b) {
     if (a.tick === b.tick) return a.note - b.note;
     return a.tick - b.tick;
   });
   tempos.sort(function(a, b) { return a.tick - b.tick; });
 
-  return { notes: notes, tempos: tempos, division: division };
+  return { notes: notes, tempos: tempos, division: division, drumNotes: drumNotes };
 }
 
 function parseTrack(track) {
@@ -4041,7 +4071,7 @@ function parseTrack(track) {
         var channel = status & 0x0F;
         var slot = (channel << 8) | d1;
         if (eventType === 0x90 && d2 > 0) {
-          var noteObj = { tick: absTick, note: d1, durTicks: 0 };
+          var noteObj = { tick: absTick, note: d1, durTicks: 0, channel: channel };
           notes.push(noteObj);
           if (!active[slot]) active[slot] = [];
           active[slot].push(noteObj);              // queue it until a note-off arrives
@@ -4198,8 +4228,18 @@ var UI_TAG = {
   language: 1, chooseMidi: 2, transpose: 3, mode: 4, layout: 5, precision: 6, sending: 7,
   modifier: 8, speed: 9, delay: 10, base: 11, resetBase: 12, liveLog: 13, arm: 14, stop: 15,
   openLog: 16, openFolder: 17, about: 18, pause: 19, speedButtons: 20, slower: 21, faster: 22,
-  normalSpeed: 23, liveKeys: 24, access: 25, website: 26
+  normalSpeed: 23, liveKeys: 24, access: 25, website: 26, helpManual: 27, helpStart: 28,
+  helpTrouble: 29, helpIssue: 30, demoBase: 100
 };
+
+// The demo songs bundled in Contents/Resources/demo (build.sh copies them
+// from docs/demo, where tools/genmidi.py writes them).
+var DEMO_SONGS = [
+  { file: "ode-to-joy.mid", en: "Ode to Joy (Beethoven)", fr: "Ode à la joie (Beethoven)" },
+  { file: "fur-elise.mid", en: "Für Elise (Beethoven)", fr: "Lettre à Élise (Beethoven)" },
+  { file: "full-range-arpeggios.mid", en: "Full-range arpeggios (Mode 2)", fr: "Arpèges sur tout le clavier (Mode 2)" }
+];
+var DOCS_URL = APP_REPO_URL + "/blob/main/docs/";
 
 // Key codes the live keys may pass on to Roblox besides the piano's own keys:
 // Space (the sustain pedal of many Roblox pianos). Everything else — Escape,
@@ -4227,8 +4267,9 @@ var UI_STRINGS = {
     transposeNone: "0 · none",
     transposeItem: "{sign}{n} semitones",
     noSong: "No song loaded yet.",
-    noSongInfo: "Pick a MIDI file to see how it fits on the piano.",
+    noSongInfo: "Pick a MIDI file to see how it fits on the piano — or try one from File › Demo Songs.",
     songInfo: "{notes} notes · {span} · about {duration} at {speed}× · starts {delay} s after your click",
+    songInfoDrums: " · {n} drum hits left out",
     mode1: "Mode 1 · Classic piano (61 keys)",
     mode2: "Mode 2 · Extended piano (88 keys)",
     mode1Help: "Standard Roblox piano, C2 to C7: white keys 1 … m, black keys with Shift.",
@@ -4302,7 +4343,7 @@ var UI_STRINGS = {
     statusPaused: "Paused — “{song}”",
     statusPausedDetail: "{pos} / {dur} · press Resume to carry on from here",
     statusNeedsAccess: "macOS has not allowed this app to send keys yet",
-    statusNeedsAccessDetail: "Click Allow…, then switch Roblox MIDI Piano Player on under Privacy & Security → Accessibility.",
+    statusNeedsAccessDetail: "Click Allow…, then switch the app on in the Accessibility settings.",
     statusFinished: "Finished “{song}”.",
     statusFinishedDetail: "Load another song, or arm the same one again.",
     statusStopped: "Stopped.",
@@ -4342,6 +4383,14 @@ var UI_STRINGS = {
     menuSlower: "Slower",
     menuNormalSpeed: "Normal Speed",
     menuLiveKeys: "Live Keys",
+    menuDemos: "Demo Songs",
+    menuHelp: "Help",
+    menuManual: "Roblox MIDI Piano Player Help",
+    menuGettingStarted: "Getting Started",
+    menuTroubleshooting: "Troubleshooting",
+    menuReportIssue: "Report a Problem…",
+    cancel: "Cancel",
+    save: "Save",
     menuAbout: "About Roblox MIDI Piano Player",
     menuQuit: "Quit Roblox MIDI Piano Player",
     aboutTitle: "Roblox MIDI Piano Player {version}",
@@ -4379,8 +4428,9 @@ var UI_STRINGS = {
     transposeNone: "0 · aucune",
     transposeItem: "{sign}{n} demi-tons",
     noSong: "Aucun morceau chargé pour l'instant.",
-    noSongInfo: "Choisis un fichier MIDI pour voir comment il se place sur le piano.",
+    noSongInfo: "Choisis un fichier MIDI pour voir comment il se place sur le piano — ou essaie Fichier › Morceaux de démo.",
     songInfo: "{notes} notes · {span} · environ {duration} à {speed}× · démarre {delay} s après ton clic",
+    songInfoDrums: " · {n} coups de batterie ignorés",
     mode1: "Mode 1 · Piano classique (61 touches)",
     mode2: "Mode 2 · Piano étendu (88 touches)",
     mode1Help: "Piano Roblox standard, de C2 à C7 : touches blanches 1 … m, touches noires avec Maj.",
@@ -4454,7 +4504,7 @@ var UI_STRINGS = {
     statusPaused: "En pause — « {song} »",
     statusPausedDetail: "{pos} / {dur} · appuie sur Reprendre pour continuer d'ici",
     statusNeedsAccess: "macOS n'autorise pas encore cette app à envoyer des touches",
-    statusNeedsAccessDetail: "Clique sur Autoriser…, puis active Roblox MIDI Piano Player dans Confidentialité et sécurité → Accessibilité.",
+    statusNeedsAccessDetail: "Clique sur Autoriser…, puis active l'app dans les réglages Accessibilité.",
     statusFinished: "« {song} » terminé.",
     statusFinishedDetail: "Charge un autre morceau, ou arme de nouveau le même.",
     statusStopped: "Arrêté.",
@@ -4494,6 +4544,14 @@ var UI_STRINGS = {
     menuSlower: "Moins vite",
     menuNormalSpeed: "Vitesse normale",
     menuLiveKeys: "Touches en direct",
+    menuDemos: "Morceaux de démo",
+    menuHelp: "Aide",
+    menuManual: "Aide de Roblox MIDI Piano Player",
+    menuGettingStarted: "Bien démarrer",
+    menuTroubleshooting: "Dépannage",
+    menuReportIssue: "Signaler un problème…",
+    cancel: "Annuler",
+    save: "Enregistrer",
     menuAbout: "À propos de Roblox MIDI Piano Player",
     menuQuit: "Quitter Roblox MIDI Piano Player",
     aboutTitle: "Roblox MIDI Piano Player {version}",
@@ -4791,7 +4849,16 @@ function mainWindowUI(options) {
   // AppKit would put the cursor in the first text field, and the piano keys
   // would then type into it instead of playing: start with no field focused.
   UI.window.makeFirstResponder($());
-  nsApp.activateIgnoringOtherApps(true);
+  if (UI.selfTest) {
+    // The self test must stay visible to screencapture whatever the person is
+    // doing: shown on the Space in use (even over a full-screen app), floating,
+    // and without taking the focus away from them.
+    UI.window.setCollectionBehavior((1 << 0) | (1 << 8));   // can join all Spaces | full-screen auxiliary
+    UI.window.setLevel(3);                                   // floating
+    UI.window.orderFrontRegardless;
+  } else {
+    nsApp.activateIgnoringOtherApps(true);
+  }
   UI.timer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(UI_TIMER_SECONDS, UI.controller, 'uiTimer:', null, true);
   uiWriteWindowInfo("shown");
 
@@ -4921,6 +4988,16 @@ function uiBuildMenu() {
   menubar.addItem(fileItem);
   var fileMenu = $.NSMenu.alloc.initWithTitle($(T("menuFile")));
   fileMenu.addItem(uiMenuItem(T("menuOpen"), 'uiAction:', "o", UI_TAG.chooseMidi));
+  if (demoSongPath(0)) {
+    var demoItem = $.NSMenuItem.alloc.init;
+    demoItem.setTitle($(T("menuDemos")));
+    var demoMenu = $.NSMenu.alloc.initWithTitle($(T("menuDemos")));
+    for (var d = 0; d < DEMO_SONGS.length; d++) {
+      demoMenu.addItem(uiMenuItem(demoSongTitle(d), 'uiAction:', "", UI_TAG.demoBase + d));
+    }
+    demoItem.setSubmenu(demoMenu);
+    fileMenu.addItem(demoItem);
+  }
   fileMenu.addItem($.NSMenuItem.separatorItem);
   fileMenu.addItem(uiMenuItem(T("menuClose"), 'performClose:', "w"));
   fileItem.setSubmenu(fileMenu);
@@ -4958,8 +5035,38 @@ function uiBuildMenu() {
   windowMenu.addItem(uiMenuItem(T("menuMinimize"), 'performMiniaturize:', "m"));
   windowItem.setSubmenu(windowMenu);
 
+  // Help opens the documentation on GitHub (the only network use, and only on request).
+  var helpItem = $.NSMenuItem.alloc.init;
+  menubar.addItem(helpItem);
+  var helpMenu = $.NSMenu.alloc.initWithTitle($(T("menuHelp")));
+  helpMenu.addItem(uiMenuItem(T("menuManual"), 'uiAction:', "?", UI_TAG.helpManual));
+  helpMenu.addItem(uiMenuItem(T("menuGettingStarted"), 'uiAction:', "", UI_TAG.helpStart));
+  helpMenu.addItem(uiMenuItem(T("menuTroubleshooting"), 'uiAction:', "", UI_TAG.helpTrouble));
+  helpMenu.addItem($.NSMenuItem.separatorItem);
+  helpMenu.addItem(uiMenuItem(T("menuReportIssue"), 'uiAction:', "", UI_TAG.helpIssue));
+  helpItem.setSubmenu(helpMenu);
+
   UI.nsApp.setMainMenu(menubar);
   try { UI.nsApp.setWindowsMenu(windowMenu); } catch (_) {}
+  try { UI.nsApp.setHelpMenu(helpMenu); } catch (_) {}
+}
+
+// Where a bundled demo song is, or "" when it is missing (running from source).
+function demoSongPath(index) {
+  var song = DEMO_SONGS[index];
+  var main = currentMainScriptPath();
+  if (!song || !main) return "";
+  var path = main.slice(0, main.lastIndexOf("/")) + "/demo/" + song.file;
+  return $.NSFileManager.defaultManager.fileExistsAtPath($(path)) ? path : "";
+}
+
+function demoSongTitle(index) {
+  var song = DEMO_SONGS[index];
+  return uiEffectiveLanguage() === "fr" ? song.fr : song.en;
+}
+
+function uiOpenURL(url) {
+  app.doShellScript('/usr/bin/open ' + shellQuote(url));
 }
 
 // --- Widget factories ----------------------------------------------------------
@@ -5329,7 +5436,9 @@ function uiChooseMidiPath() {
   return String(unwrapMaybe(urls.objectAtIndex(0).path) || "");
 }
 
-function uiLoadSong(path) {
+// `displayName` replaces the file name in the window and the notifications;
+// `demoIndex` marks a demo song, whose title follows the window's language.
+function uiLoadSong(path, displayName, demoIndex) {
   path = String(path || "");
   if (!path) return;
   var parsed;
@@ -5344,7 +5453,7 @@ function uiLoadSong(path) {
   if (parsed.notes.length === 0) throw new Error(T("errMidiEmpty"));
   UI.transpose = 0;
   uiSetPopupItems(UI.w.transpose, uiPopupTitles(UI.w.transpose), 12);
-  UI.song = { path: path, name: basename(path), parsed: parsed };
+  UI.song = { path: path, name: displayName ? String(displayName) : basename(path), parsed: parsed, demoIndex: demoIndex };
   uiRefreshSong();
   try { appendPlaybackLog(UI.supportDir, "Window: loaded " + basename(path) + " (" + parsed.notes.length + " notes)."); } catch (_) {}
 }
@@ -5415,13 +5524,14 @@ function uiRenderSongInfo() {
   var builtSpeed = fit.playbackCfg.speed > 0 ? fit.playbackCfg.speed : 1;
   var length = scheduleLengthSeconds(fit.built.schedule) * builtSpeed / UI.cfg.speed;
   w.songName.setStringValue($(UI.song.name));
+  var drums = UI.song.parsed.drumNotes > 0 ? T("songInfoDrums", { n: UI.song.parsed.drumNotes }) : "";
   w.songInfo.setStringValue($(T("songInfo", {
     notes: fit.analysis.totalNotes,
     span: noteName(fit.analysis.minNote) + " → " + noteName(fit.analysis.maxNote),
     duration: formatClock(length),
     speed: Number(UI.cfg.speed).toFixed(2),
     delay: formatNumber(UI.cfg.startDelaySeconds, 2)
-  })));
+  }) + drums));
 }
 
 function uiRenderCoverage() {
@@ -6170,7 +6280,8 @@ function uiOnTimer() {
   if (!UI || UI.busy) return;
   UI.ticks++;
   if ((UI.ticks % 8) === 0) {
-    var trusted = accessibilityTrustedValue();
+    // The self test can stand in for a Mac without the permission.
+    var trusted = UI.trustOverride != null ? UI.trustOverride : accessibilityTrustedValue();
     if (trusted !== UI.trusted) {
       UI.trusted = trusted;
       UI.statusKey = "";
@@ -6242,13 +6353,24 @@ function uiDispatchAction(sender) {
     else if (tag === UI_TAG.normalSpeed) uiSetSpeed(1);
     else if (tag === UI_TAG.liveKeys) uiOnLiveKeys(sender);
     else if (tag === UI_TAG.access) uiOnAccess();
+    else if (tag === UI_TAG.helpManual) uiOpenURL(DOCS_URL + "manual.md");
+    else if (tag === UI_TAG.helpStart) uiOpenURL(DOCS_URL + "getting-started.md");
+    else if (tag === UI_TAG.helpTrouble) uiOpenURL(DOCS_URL + "troubleshooting.md");
+    else if (tag === UI_TAG.helpIssue) uiOpenURL(APP_REPO_URL + "/issues");
+    else if (tag >= UI_TAG.demoBase && tag < UI_TAG.demoBase + DEMO_SONGS.length) uiOnDemo(tag - UI_TAG.demoBase);
   });
+}
+
+function uiOnDemo(index) {
+  var path = demoSongPath(index);
+  if (path) uiLoadSong(path, demoSongTitle(index), index);
 }
 
 function uiOnLanguage() {
   var idx = Number(UI.w.language.indexOfSelectedItem);
   UI.cfg.uiLanguage = idx === 1 ? "fr" : "en";
   uiSaveConfig();
+  if (UI.song && UI.song.demoIndex != null) UI.song.name = demoSongTitle(UI.song.demoIndex);
   UI.statusKey = "";
   uiBuildMenu();
   uiApplyStrings();
@@ -6284,7 +6406,7 @@ function uiOnLayout() {
     var current = normalizeKeyboardProfile(UI.cfg.keyboardProfile) === "custom" ? UI.cfg.keyLayout : defaultConfig.keyLayout;
     var answer;
     try {
-      answer = promptForText(T("customLayoutTitle"), T("customLayoutPrompt"), current);
+      answer = promptForText(T("customLayoutTitle"), T("customLayoutPrompt"), current, [T("cancel"), T("save")]);
     } catch (e) {
       uiApplyStrings();
       if (isCanceledError(e)) return;
@@ -6492,7 +6614,7 @@ function uiOnArm() {
   uiUpdateButtons();
   uiPump(0.05);
   try {
-    var armed = armBackgroundPlayback(fit.built.schedule, UI.song.path, UI.supportDir, { language: uiEffectiveLanguage(), quiet: !!UI.selfTest });
+    var armed = armBackgroundPlayback(fit.built.schedule, UI.song.path, UI.supportDir, { language: uiEffectiveLanguage(), quiet: !!UI.selfTest, songName: UI.song.name });
     UI.controlJobId = armed.jobId;
     UI.paused = false;
     if (UI.cfg.openLiveLogWindow) openLiveLogWindow(UI.supportDir, UI.song.name);
@@ -6560,7 +6682,7 @@ function uiOnAbout() {
   alert.addButtonWithTitle($(T("aboutWebsite")));
   if (UI && UI.selfTest) return;
   if (Number(alert.runModal) === 1001) {   // NSAlertSecondButtonReturn
-    app.doShellScript('/usr/bin/open ' + shellQuote(APP_REPO_URL));
+    uiOpenURL(APP_REPO_URL);
   }
 }
 
@@ -6616,7 +6738,12 @@ function uiRunSelfTest() {
     uiPump(0.4);
     step("01_initial", function() {});
     if (st.midi) {
-      step("02_loaded", function() { uiLoadSong(st.midi); });
+      // A demo song shows its title, as when it is opened from File › Demo Songs.
+      var demoIndex = null;
+      for (var dm = 0; dm < DEMO_SONGS.length; dm++) {
+        if (basename(st.midi) === DEMO_SONGS[dm].file) demoIndex = dm;
+      }
+      step("02_loaded", function() { uiLoadSong(st.midi, demoIndex != null ? demoSongTitle(demoIndex) : "", demoIndex); });
     }
     step("03_mode2", function() { UI.w.mode.setSelectedSegment(1); uiOnMode(); });
     step("04_mode1", function() { UI.w.mode.setSelectedSegment(0); uiOnMode(); });
@@ -6744,6 +6871,8 @@ function uiRunSelfTest() {
       UI.w.delay.setStringValue($("0.5"));
       UI.w.language.selectItemAtIndex(0); uiOnLanguage();
       UI.w.mode.setSelectedSegment(0); uiOnMode();
+      fakeState.songName = UI.song ? UI.song.name : fakeState.songName;
+      savePlaybackState(UI.supportDir, fakeState);
       UI.statusKey = "";
       uiRefreshPlayback();
       uiRefreshLiveStatus(true);
@@ -6757,7 +6886,6 @@ function uiRunSelfTest() {
     report.playingDetail = String(unwrapMaybe(UI.w.statusDetail.stringValue));
     report.pauseEnabled = !!UI.w.pause.isEnabled;
     step("13_paused", function() {
-      UI.w.language.selectItemAtIndex(1); uiOnLanguage();
       uiOnPause();
       fakeState.paused = true;
       fakeState.updatedAt = nowSeconds();
@@ -6769,6 +6897,14 @@ function uiRunSelfTest() {
     report.pausedControl = readPlaybackControl(UI.supportDir);
     report.pausedButton = String(unwrapMaybe(UI.w.pause.title));
     report.pausedText = String(unwrapMaybe(UI.w.statusText.stringValue));
+    step("13_paused_fr", function() {
+      UI.w.language.selectItemAtIndex(1); uiOnLanguage();
+      fakeState.songName = UI.song ? UI.song.name : fakeState.songName;
+      savePlaybackState(UI.supportDir, fakeState);
+      UI.statusKey = "";
+      uiRefreshPlayback();
+    });
+    UI.w.language.selectItemAtIndex(0); uiOnLanguage();
     uiOnPause();
     report.resumedControl = readPlaybackControl(UI.supportDir);
     removeFileIfExists(playbackStatePath(UI.supportDir));
@@ -6795,6 +6931,7 @@ function uiRunSelfTest() {
     LIVE.testSender = null;
     var realTrust = UI.trusted;
     step("14_needs_access", function() {
+      UI.trustOverride = false;
       UI.trusted = false;
       UI.statusKey = "";
       uiRefreshPlayback();
@@ -6802,6 +6939,7 @@ function uiRunSelfTest() {
     });
     report.accessShown = !UI.w.access.isHidden && !!UI.w.pause.isHidden;
     report.accessText = String(unwrapMaybe(UI.w.statusText.stringValue));
+    UI.trustOverride = null;
     UI.trusted = realTrust;
     UI.statusKey = "";
     uiRefreshPlayback();
@@ -6826,6 +6964,17 @@ function uiRunSelfTest() {
       report.stoppedState = readPlaybackState(UI.supportDir);
       report.controlAfterStop = readPlaybackControl(UI.supportDir);
     }
+    // The menu bar, and a demo song opened the way File › Demo Songs does.
+    var bar = UI.nsApp.mainMenu;
+    report.menus = [];
+    for (var mi = 1; mi < Number(bar.numberOfItems); mi++) {
+      var sub = bar.itemAtIndex(mi).submenu;
+      var titles = [];
+      for (var si = 0; si < Number(sub.numberOfItems); si++) titles.push(String(unwrapMaybe(sub.itemAtIndex(si).title)));
+      report.menus.push(String(unwrapMaybe(sub.title)) + ": " + titles.join(" | "));
+    }
+    uiDispatchAction(UI.nsApp.mainMenu.itemAtIndex(1).submenu.itemAtIndex(1).submenu.itemAtIndex(1));
+    report.demoLoaded = UI.song ? UI.song.name + " (" + UI.song.parsed.notes.length + " notes)" : "";
     report.windowHeight = UI.windowHeight;
     report.language = uiEffectiveLanguage();
   } finally {
