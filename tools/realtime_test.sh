@@ -6,7 +6,8 @@
 #   - notes 0.25 s apart at 1x, then 0.125 s apart after the speed change;
 #   - a clean 1.5 s pause with no key pressed, then the same spacing again.
 #
-#   tools/realtime_test.sh
+#   tools/realtime_test.sh                 tests src/main.js
+#   tools/realtime_test.sh path/to/main.js tests another copy (the built app's)
 #
 # It takes about ten seconds. Like the app, the terminal that runs it needs
 # the Accessibility permission (System Settings › Privacy & Security ›
@@ -14,6 +15,7 @@
 # Key events go to the test app only, never to another app.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+MAIN_JS="${1:-$PWD/src/main.js}"
 
 WORK="$(mktemp -d -t rmpp-realtime)"
 trap 'rm -rf -- "$WORK"' EXIT
@@ -27,7 +29,7 @@ for _ in $(seq 1 50); do
 done
 TARGET="$(cat "$WORK/keys.log.pid")"
 
-/usr/bin/osascript -l JavaScript tools/realtime_test.js "$PWD/src/main.js" "$WORK/support" "$TARGET" "$WORK/keys.log.done" > "$WORK/run.json"
+/usr/bin/osascript -l JavaScript tools/realtime_test.js "$MAIN_JS" "$WORK/support" "$TARGET" "$WORK/keys.log.done" > "$WORK/run.json"
 wait "$RECEIVER"
 
 /usr/bin/python3 - "$WORK" <<'PY'

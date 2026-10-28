@@ -23,7 +23,7 @@ var app = Application.currentApplication();
 app.includeStandardAdditions = true;
 
 var APP_NAME = "Roblox MIDI Piano Player";
-var APP_VERSION = "2.1.1";
+var APP_VERSION = "2.2.0";
 var APP_REPO_URL = "https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player";
 var SUPPORT_DIR_NAME = "Roblox MIDI Piano Player";
 var WAIT_FOR_ROBLOX_PROMPT_SECONDS = 30;
@@ -184,6 +184,13 @@ function run(argv) {
     return;
   }
 
+  // Lists everything the uninstaller would remove; --yes removes it (to the
+  // Trash, or right away with --now).
+  if (argv.length >= 1 && String(argv[0]) === "--uninstall") {
+    var flags = argv.slice(1).map(String);
+    return uninstallFromCommandLine(flags.indexOf("--yes") >= 0, flags.indexOf("--now") >= 0);
+  }
+
   if (argv.length >= 1 && String(argv[0]) === "--selftest-senders") {
     return selfTestSenders(argv.length >= 2 ? String(argv[1]) : "");
   }
@@ -245,22 +252,42 @@ function activateFinderApp() {
   }
 }
 
+// The Roblox player. Asking macOS for it by its bundle identifier is one
+// call; reading every running app, as the scan below does, takes ~40 ms.
+var ROBLOX_PLAYER_BUNDLE_ID = "com.roblox.RobloxPlayer";
+
+// Name, bundle identifier, executable path and process id of a running app.
+function runningAppInfo(a) {
+  var info = {
+    name: String(unwrapMaybe(a.localizedName) || ""),
+    bundleIdentifier: String(unwrapMaybe(a.bundleIdentifier) || ""),
+    path: "",
+    pid: Math.round(Number(a.processIdentifier))
+  };
+  try { if (a.executableURL) info.path = String(unwrapMaybe(a.executableURL.path) || ""); } catch (_) {}
+  return info;
+}
+
 // Locate the actual Roblox game process (not the menu-bar helper or its network
-// process). Used by the sender self test, which aims events at a process id.
-function findRobloxPlayerProcess() {
+// process). The player is looked up directly first; `quick` stops there,
+// otherwise every running app is read to find any other Roblox app.
+function findRobloxPlayerProcess(quick) {
+  try {
+    var players = $.NSRunningApplication.runningApplicationsWithBundleIdentifier($(ROBLOX_PLAYER_BUNDLE_ID));
+    for (var p = 0; p < Number(players.count); p++) {
+      var direct = runningAppInfo(players.objectAtIndex(p));
+      if (direct.pid > 0 && isRobloxApplicationInfo(direct)) return direct;
+    }
+  } catch (_) {
+    // Fall through to the scan.
+  }
+  if (quick) return null;
   try {
     var apps = $.NSWorkspace.sharedWorkspace.runningApplications;
     var count = Number(apps.count);
     var best = null;
     for (var i = 0; i < count; i++) {
-      var a = apps.objectAtIndex(i);
-      var info = {
-        name: String(unwrapMaybe(a.localizedName) || ""),
-        bundleIdentifier: String(unwrapMaybe(a.bundleIdentifier) || ""),
-        path: "",
-        pid: Math.round(Number(a.processIdentifier))
-      };
-      try { if (a.executableURL) info.path = String(unwrapMaybe(a.executableURL.path) || ""); } catch (_) {}
+      var info = runningAppInfo(apps.objectAtIndex(i));
       var bid = info.bundleIdentifier.toLowerCase();
       var nm = info.name.toLowerCase();
       if (bid.indexOf("menubar") >= 0 || nm.indexOf("menubar") >= 0) continue;
@@ -718,7 +745,7 @@ function armBackgroundPlayback(schedule, midiPath, supportDir, options) {
     language: normalizeUILanguage(options.language) === "fr" ? "fr" : "en",
     quiet: !!options.quiet,
     createdAt: launchedAt,
-    schedule: schedule
+    schedule: packSchedule(schedule)
   };
   writeJSONFile(jobPath, job);
   // The control file starts at the song's own speed. The window rewrites it
@@ -895,7 +922,7 @@ function getPlaybackStatus(supportDir) {
     savePlaybackState(supportDir, state);
   }
 
-  state = readPlaybackState(supportDir);
+  // `state` is what the file now holds (it was read once, and saved as is).
   return {
     active: active,
     pid: active ? pid : 0,
@@ -940,7 +967,7 @@ function resetPlaybackLog(supportDir) {
 }
 
 function appendPlaybackLog(supportDir, message) {
-  if (!supportDir) return;
+  if (!supportDir || UNINSTALLED) return;
 
   var path = playbackLogPath(supportDir);
   var line = "[" + (new Date()).toISOString() + "] " + String(message || "");
@@ -1181,6 +1208,59 @@ function currentMainScriptPath() {
   return "";
 }
 
+// The job file carries every note of the song. Written as objects with
+// indentation, a 12,000-note song came to 3.4 MB; packed as one short array
+// per note it is a fraction of that, written and read faster. Times are kept
+// to the microsecond. unpackSchedule also accepts the object form, which
+// older versions of the window write.
+var PACKED_EVENT_FIELDS = "t,dur,keyCode,flags,k,keyLabel,sourceMIDINote,playedMIDINote,stepIndex";
+
+function packSchedule(schedule) {
+  var packed = {};
+  for (var key in schedule) {
+    if (schedule.hasOwnProperty(key) && key !== "events") packed[key] = schedule[key];
+  }
+  var events = schedule.events || [];
+  var rows = new Array(events.length);
+  for (var i = 0; i < events.length; i++) {
+    var ev = events[i];
+    rows[i] = [
+      Math.round(Number(ev.t || 0) * 1e6) / 1e6,
+      Math.round(Number(ev.dur || 0) * 1e6) / 1e6,
+      ev.keyCode != null ? ev.keyCode : null,
+      (ev.keyShift ? 1 : 0) | (ev.keyCtrl ? 2 : 0),
+      ev.k != null ? ev.k : null,
+      ev.keyLabel != null && ev.keyLabel !== ev.k ? ev.keyLabel : null,
+      ev.sourceMIDINote != null ? ev.sourceMIDINote : null,
+      ev.playedMIDINote != null ? ev.playedMIDINote : null,
+      ev.stepIndex != null ? ev.stepIndex : null
+    ];
+  }
+  packed.packedEvents = { fields: PACKED_EVENT_FIELDS, rows: rows };
+  return packed;
+}
+
+function unpackSchedule(schedule) {
+  if (!schedule || !schedule.packedEvents || schedule.events) return schedule;
+  var rows = schedule.packedEvents.rows || [];
+  var events = new Array(rows.length);
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var ev = { t: r[0], dur: r[1], k: r[4], keyShift: !!(r[3] & 1), keyCtrl: !!(r[3] & 2), keyLabel: r[5] != null ? r[5] : r[4] };
+    if (r[2] != null) ev.keyCode = r[2];
+    if (r[6] != null) ev.sourceMIDINote = r[6];
+    if (r[7] != null) ev.playedMIDINote = r[7];
+    if (r[8] != null) ev.stepIndex = r[8];
+    events[i] = ev;
+  }
+  var out = {};
+  for (var key in schedule) {
+    if (schedule.hasOwnProperty(key) && key !== "packedEvents") out[key] = schedule[key];
+  }
+  out.events = events;
+  return out;
+}
+
 function savePlaybackState(supportDir, state) {
   writeJSONFile(playbackStatePath(supportDir), state);
 }
@@ -1196,11 +1276,14 @@ function readJSONFile(path) {
   return JSON.parse(readTextFile(path));
 }
 
+// Compact, as only the app reads these files (config.json is written with
+// indentation by saveConfig, for people who open it).
 function writeJSONFile(path, value) {
-  writeTextFile(path, JSON.stringify(value, null, 2));
+  writeTextFile(path, JSON.stringify(value));
 }
 
 function writeTextFile(path, text) {
+  if (UNINSTALLED) return;
   var ok = $(String(text)).writeToFileAtomicallyEncodingError($(path), true, $.NSUTF8StringEncoding, null);
   if (!ok) {
     throw new Error("Could not write file: " + path);
@@ -1282,6 +1365,7 @@ function workerText(job, key, vars) {
 
 function workerMain(jobPath) {
   var job = readJSONFile(jobPath);
+  if (job && job.schedule) job.schedule = unpackSchedule(job.schedule);
   if (!job || !job.supportDir || !job.schedule || !job.schedule.events) {
     throw new Error("Invalid playback job.");
   }
@@ -1455,7 +1539,23 @@ function workerFatal(jobPath, e) {
   }
 }
 
+// The front app's details, read again only when another app comes to the
+// front: while armed, the player looks 20 times a second.
+function frontmostApplicationInfoCached(cache) {
+  try {
+    var front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+    var pid = front ? Math.round(Number(front.processIdentifier)) : 0;
+    if (pid > 0 && pid === cache.pid && cache.info) return cache.info;
+    cache.pid = pid;
+  } catch (_) {
+    cache.pid = -1;
+  }
+  cache.info = frontmostApplicationInfo();
+  return cache.info;
+}
+
 function waitForRobloxFrontmost(supportDir, job) {
+  var frontCache = { pid: -1, info: null };
   var waited = 0;
   var lastSeenKey = "";
   var candidatePid = 0;
@@ -1466,7 +1566,7 @@ function waitForRobloxFrontmost(supportDir, job) {
       throw canceledError();
     }
 
-    var info = frontmostApplicationInfo();
+    var info = frontmostApplicationInfoCached(frontCache);
     var infoKey = [String(info.name || ""), String(info.bundleIdentifier || ""), String(info.path || ""), String(info.pid || 0)].join("\n");
     if (infoKey !== lastSeenKey) {
       appendPlaybackLog(supportDir, "Frontmost application changed: " + describeApplicationInfo(info));
@@ -2558,10 +2658,6 @@ function layoutCharSpec(ch) {
 }
 
 
-function debugCharText(ch) {
-  ch = String(ch || "");
-  return "'" + ch.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
-}
 
 function schedulePreviewText(schedule, maxItems) {
   schedule = schedule || {};
@@ -2599,21 +2695,308 @@ function shortText(s, maxLen) {
 }
 
 
-function ensureSupportDir() {
-  var home = ObjC.unwrap($.NSHomeDirectory());
-  var path = home + "/Library/Application Support/" + SUPPORT_DIR_NAME;
-  // Tests (and anyone who wants a separate setup) can point the app at another
-  // folder; a worker always uses the folder written in its job.
+// The settings folder. Tests (and anyone who wants a separate setup) can point
+// the app at another folder; a worker always uses the folder in its job.
+function supportDirPath() {
+  var path = ObjC.unwrap($.NSHomeDirectory()) + "/Library/Application Support/" + SUPPORT_DIR_NAME;
+  var override = environmentValue("ROBLOX_MIDI_PLAYER_SUPPORT_DIR");
+  return override ? override : path;
+}
+
+function environmentValue(name) {
   try {
-    var override = unwrapMaybe($.NSProcessInfo.processInfo.environment.objectForKey($("ROBLOX_MIDI_PLAYER_SUPPORT_DIR")));
-    if (override) path = String(override);
-  } catch (_) {}
+    var value = unwrapMaybe($.NSProcessInfo.processInfo.environment.objectForKey($(name)));
+    return value ? String(value) : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function ensureSupportDir() {
+  var path = supportDirPath();
+  if (UNINSTALLED) return path;
   try {
     app.doShellScript('/bin/mkdir -p ' + shellQuote(path));
   } catch (e) {
     throw new Error("Could not create the Application Support folder.\n\n" + messageOf(e));
   }
   return path;
+}
+
+
+// =============================================================================
+// Uninstaller (v2.2.0)
+// =============================================================================
+// Removes every version of the app from this Mac and everything they left:
+// the app and every older copy (found by bundle identifier or by name),
+// downloaded archives of it, the first version's source folder, the settings
+// folder (with its logs and old song files), macOS's own leftovers for the
+// app's bundle identifiers, and its Accessibility permission. It lists all of
+// it first, and moves it to the Trash unless told to delete right away.
+// Nothing else is ever touched: only the kinds of item listed here.
+
+var APP_BUNDLE_IDS = [
+  "io.github.godisgood-godisgreat-and-godisreal-amen.robloxmidipianoplayer",   // 2.1 and later
+  "com.openai.robloxmidipianoplayer"                                          // 1.0 to 2.0
+];
+// The very first version came as Swift source, in a folder with these files.
+var EARLY_SOURCE_MARKER = "RobloxMIDIPianoPlayer.swift";
+var EARLY_SOURCE_FILES = ["README.md", "RobloxMIDIPianoPlayer.swift", "build_app.sh", ".DS_Store"];
+// Set once everything is removed, so nothing writes the settings folder again.
+var UNINSTALLED = false;
+
+// "Roblox MIDI Piano Player-7.app", "Roblox_MIDI_Piano_Player_macOS_App_v1_2.zip"
+// and "Roblox-MIDI-Piano-Player-2.1.1.zip" all start with this once letters
+// and digits alone are kept.
+function uninstallIsOurName(name) {
+  return String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "").indexOf("robloxmidipianoplayer") === 0;
+}
+
+function uninstallInfoPlist(appPath) {
+  try {
+    var d = $.NSDictionary.dictionaryWithContentsOfFile($(appPath + "/Contents/Info.plist"));
+    if (!d || d.isNil()) return {};
+    return {
+      id: String(unwrapMaybe(d.objectForKey($("CFBundleIdentifier"))) || ""),
+      version: String(unwrapMaybe(d.objectForKey($("CFBundleShortVersionString"))) || "")
+    };
+  } catch (_) {
+    return {};
+  }
+}
+
+function uninstallListDir(path) {
+  try {
+    var names = $.NSFileManager.defaultManager.contentsOfDirectoryAtPathError($(path), null);
+    if (!names || names.isNil()) return [];
+    var out = [];
+    for (var i = 0; i < Number(names.count); i++) out.push(String(unwrapMaybe(names.objectAtIndex(i))));
+    return out;
+  } catch (_) {
+    return [];
+  }
+}
+
+function uninstallIsDir(path) {
+  var isDir = Ref();
+  return !!$.NSFileManager.defaultManager.fileExistsAtPathIsDirectory($(path), isDir) && !!isDir[0];
+}
+
+function uninstallExists(path) {
+  return !!$.NSFileManager.defaultManager.fileExistsAtPath($(path));
+}
+
+function uninstallSize(path) {
+  try {
+    var kb = parseInt(trim(app.doShellScript("/usr/bin/du -sk " + shellQuote(path) + " | /usr/bin/cut -f1")), 10);
+    return kb > 0 ? kb * 1024 : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  return (bytes > 0 ? Math.max(1, Math.round(bytes / 1024)) : 0) + " KB";
+}
+
+function uninstallSpotlight(query) {
+  try {
+    var text = app.doShellScript("/usr/bin/mdfind " + shellQuote(query) + " 2>/dev/null || true");
+    return String(text || "").split("\r").join("\n").split("\n").filter(function(line) { return line.length > 0; });
+  } catch (_) {
+    return [];
+  }
+}
+
+// What there is to remove. With ROBLOX_MIDI_PLAYER_UNINSTALL_ROOTS set (a
+// colon-separated list of folders, for tests) only those folders and the
+// settings folder are looked at.
+function uninstallPlan() {
+  var home = ObjC.unwrap($.NSHomeDirectory());
+  var testRoots = environmentValue("ROBLOX_MIDI_PLAYER_UNINSTALL_ROOTS");
+  var test = !!testRoots;
+  var roots = test ? testRoots.split(":") : ["/Applications", home + "/Applications", home + "/Downloads", home + "/Desktop", home + "/Documents"];
+  var selfBundle = currentAppBundlePath();
+  var plan = { items: [], test: test, permissionIds: test ? [] : APP_BUNDLE_IDS.slice(), supportDir: supportDirPath(), selfBundle: selfBundle };
+  var seen = {};
+
+  function add(path, kind) {
+    path = String(unwrapMaybe($(path).stringByStandardizingPath) || path);
+    if (seen[path] || !uninstallExists(path)) return;
+    if (path.indexOf(home + "/.Trash/") === 0 || path.indexOf("/.Trashes/") >= 0) return;   // already in the Trash
+    seen[path] = true;
+    var item = { path: path, kind: kind, bytes: uninstallSize(path), self: !!selfBundle && path === selfBundle };
+    if (kind === "app") item.version = uninstallInfoPlist(path).version || "";
+    plan.items.push(item);
+  }
+  function considerApp(path, name) {
+    var id = uninstallInfoPlist(path).id;
+    if (APP_BUNDLE_IDS.indexOf(id) >= 0 || uninstallIsOurName(name)) add(path, "app");
+  }
+  function considerEntry(dir, name) {
+    var path = dir + "/" + name;
+    var lower = name.toLowerCase();
+    if (lower.slice(-4) === ".app") return considerApp(path, name);
+    if (lower.slice(-4) === ".zip") {
+      if (uninstallIsOurName(name)) add(path, "zip");
+      return;
+    }
+    if (!uninstallIsDir(path)) return;
+    var inside = uninstallListDir(path);
+    // An unzipped release folder: the copies inside it, not the folder.
+    if (uninstallIsOurName(name)) {
+      inside.forEach(function(child) {
+        var l = child.toLowerCase();
+        if (l.slice(-4) === ".app") considerApp(path + "/" + child, child);
+        else if (l.slice(-4) === ".zip" && uninstallIsOurName(child)) add(path + "/" + child, "zip");
+      });
+    }
+    // The first version's source folder, only if it holds nothing else.
+    if (inside.indexOf(EARLY_SOURCE_MARKER) >= 0 && inside.every(function(child) {
+      return EARLY_SOURCE_FILES.indexOf(child) >= 0 || /\.app$/i.test(child);
+    })) add(path, "source");
+  }
+
+  roots.forEach(function(root) {
+    uninstallListDir(root).forEach(function(name) { considerEntry(root, name); });
+  });
+
+  if (!test) {
+    // Copies anywhere else, as Spotlight and Launch Services know them.
+    var idQuery = APP_BUNDLE_IDS.map(function(id) { return "kMDItemCFBundleIdentifier == '" + id + "'"; }).join(" || ");
+    uninstallSpotlight(idQuery).forEach(function(path) { if (/\.app$/i.test(path)) add(path, "app"); });
+    uninstallSpotlight("kMDItemFSName == 'Roblox*MIDI*Piano*Player*.zip'c").forEach(function(path) {
+      if (uninstallIsOurName(basename(path))) add(path, "zip");
+    });
+    APP_BUNDLE_IDS.forEach(function(id) {
+      try {
+        var urls = $.NSWorkspace.sharedWorkspace.URLsForApplicationsWithBundleIdentifier($(id));
+        for (var u = 0; u < Number(urls.count); u++) add(String(unwrapMaybe(urls.objectAtIndex(u).path)), "app");
+      } catch (_) {}
+    });
+    // macOS's own files for the app's bundle identifiers.
+    APP_BUNDLE_IDS.forEach(function(id) {
+      ["/Library/Preferences/" + id + ".plist", "/Library/Saved Application State/" + id + ".savedState",
+        "/Library/Caches/" + id, "/Library/HTTPStorages/" + id, "/Library/WebKit/" + id].forEach(function(rel) {
+        add(home + rel, "leftover");
+      });
+    });
+  }
+  add(plan.supportDir, "settings");
+  // The running app is removed last.
+  plan.items.sort(function(a, b) { return (a.self ? 1 : 0) - (b.self ? 1 : 0); });
+  plan.bytes = plan.items.reduce(function(sum, item) { return sum + item.bytes; }, 0);
+  return plan;
+}
+
+// Other running copies of the app (windows and background players), by the
+// script they run. Never this process.
+function uninstallOtherProcesses() {
+  var own = currentProcessId();
+  try {
+    var lines = String(app.doShellScript("/bin/ps -axo pid=,command=")).split("\r").join("\n").split("\n");
+    var pids = [];
+    lines.forEach(function(line) {
+      var m = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (!m) return;
+      var pid = parseInt(m[1], 10);
+      if (pid !== own && m[2].indexOf("/Contents/Resources/main.js") >= 0 && m[2].indexOf("Roblox MIDI Piano Player") >= 0) pids.push(pid);
+    });
+    return pids;
+  } catch (_) {
+    return [];
+  }
+}
+
+// Removes what the plan lists. `now`: delete right away instead of moving to
+// the Trash. Returns what was removed and what could not be.
+function uninstallRun(plan, now) {
+  // 1. Stop a song that is playing, then every other running copy, so that
+  //    nothing writes the settings folder again behind us.
+  try { if (uninstallExists(plan.supportDir)) stopPlaybackCore(plan.supportDir, true); } catch (_) {}
+  if (!plan.test) {
+    var others = uninstallOtherProcesses();
+    others.forEach(function(pid) { tryShellKill(pid, ""); });
+    others.forEach(function(pid) { if (!waitForProcessExit(pid, 1.5)) tryShellKill(pid, "-9"); });
+  }
+  // 2. The files, this app last.
+  var fm = $.NSFileManager.defaultManager;
+  var result = { removed: [], failed: [], bytes: 0, now: !!now };
+  plan.items.forEach(function(item) {
+    if (item.kind === "app" && !plan.test) {
+      try { app.doShellScript("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u " + shellQuote(item.path) + " >/dev/null 2>&1 || true"); } catch (_) {}
+    }
+    var ok = false;
+    try {
+      ok = now
+        ? !!fm.removeItemAtPathError($(item.path), null)
+        : !!fm.trashItemAtURLResultingItemURLError($.NSURL.fileURLWithPath($(item.path)), null, null);
+    } catch (_) {
+      ok = false;
+    }
+    if (ok || !uninstallExists(item.path)) {
+      result.removed.push(item);
+      result.bytes += item.bytes;
+    } else {
+      result.failed.push(item);
+    }
+  });
+  // An unzipped release folder goes too once nothing else is left in it.
+  var folders = {};
+  result.removed.forEach(function(item) {
+    var parent = item.path.slice(0, item.path.lastIndexOf("/"));
+    if (uninstallIsOurName(basename(parent))) folders[parent] = true;
+  });
+  Object.keys(folders).forEach(function(dir) {
+    if (!uninstallIsDir(dir) || uninstallListDir(dir).some(function(name) { return name !== ".DS_Store"; })) return;
+    try {
+      if (now) fm.removeItemAtPathError($(dir), null);
+      else fm.trashItemAtURLResultingItemURLError($.NSURL.fileURLWithPath($(dir)), null, null);
+    } catch (_) {}
+  });
+  // 3. What is not a file: preference domains and the Accessibility permission.
+  if (!plan.test) {
+    APP_BUNDLE_IDS.forEach(function(id) {
+      try { app.doShellScript("/usr/bin/defaults delete " + shellQuote(id) + " >/dev/null 2>&1 || true"); } catch (_) {}
+    });
+    plan.permissionIds.forEach(function(id) {
+      try { app.doShellScript("/usr/bin/tccutil reset Accessibility " + shellQuote(id) + " >/dev/null 2>&1 || true"); } catch (_) {}
+    });
+  }
+  UNINSTALLED = true;
+  return result;
+}
+
+// A short description of each item, for the list: "~/Downloads/Roblox MIDI
+// Piano Player-7.app (v1.7.1, 112 KB)".
+function uninstallItemLine(item) {
+  var home = ObjC.unwrap($.NSHomeDirectory());
+  var path = item.path.indexOf(home + "/") === 0 ? "~" + item.path.slice(home.length) : item.path;
+  var details = [];
+  if (item.version) details.push("v" + item.version);
+  details.push(formatBytes(item.bytes));
+  return path + " (" + details.join(", ") + ")";
+}
+
+function uninstallFromCommandLine(yes, now) {
+  var plan = uninstallPlan();
+  var lines = [];
+  if (plan.items.length === 0) return "Nothing of Roblox MIDI Piano Player was found on this Mac.";
+  lines.push((yes ? "Removing" : "Found") + " " + plan.items.length + " item" + (plan.items.length === 1 ? "" : "s") + " (" + formatBytes(plan.bytes) + "):");
+  plan.items.forEach(function(item) { lines.push("  " + item.kind + "  " + uninstallItemLine(item)); });
+  if (plan.permissionIds.length) lines.push("  and the Accessibility permission of " + plan.permissionIds.join(", "));
+  if (!yes) {
+    lines.push("");
+    lines.push("Nothing was removed. Run again with --yes to move all of it to the Trash, or --yes --now to delete it right away.");
+    return lines.join("\n");
+  }
+  var result = uninstallRun(plan, now);
+  lines.push("");
+  lines.push((now ? "Deleted " : "Moved to the Trash: ") + result.removed.length + " item" + (result.removed.length === 1 ? "" : "s") + " (" + formatBytes(result.bytes) + ").");
+  result.failed.forEach(function(item) { lines.push("Could not remove " + item.path); });
+  return lines.join("\n");
 }
 
 function menuAction(cfg, playback) {
@@ -2919,6 +3302,7 @@ function loadConfig(path) {
 }
 
 function saveConfig(path, cfg) {
+  if (UNINSTALLED) return;
   cfg = sanitizeConfig(cfg);
   var text = JSON.stringify(cfg, null, 2);
   var ok = $(text).writeToFileAtomicallyEncodingError($(path), true, $.NSUTF8StringEncoding, null);
@@ -3327,14 +3711,15 @@ function buildSchedule(notes, tempos, division, cfg, profile) {
       skippedHigh++;
       continue;
     }
-    var seconds = tickToSeconds(n.tick, tempos, division) / speed;
+    var startSeconds = tickToSeconds(n.tick, tempos, division);
+    var seconds = startSeconds / speed;
     if (seconds < 0) seconds = 0;
     // How long the note is actually held, in seconds (respecting tempo changes
     // across the note and the speed multiplier). 0 means the MIDI gave us no
     // note-off, so the engine will fall back to a default hold.
     var durSeconds = 0;
     if (n.durTicks > 0) {
-      durSeconds = (tickToSeconds(n.tick + n.durTicks, tempos, division) - tickToSeconds(n.tick, tempos, division)) / speed;
+      durSeconds = (tickToSeconds(n.tick + n.durTicks, tempos, division) - startSeconds) / speed;
       if (!(durSeconds > 0)) durSeconds = 0;
     }
     schedule.events.push({
@@ -3825,9 +4210,6 @@ function isRobloxApplicationInfo(info) {
   return false;
 }
 
-function isRobloxFrontmost() {
-  return isRobloxApplicationInfo(frontmostApplicationInfo());
-}
 
 function mergeTempoChanges(list) {
   var copy = list.slice().sort(function(a, b) {
@@ -3856,14 +4238,18 @@ function annotateTempoSeconds(tempos, division) {
   }
 }
 
+// `tempos` is sorted by tick (mergeTempoChanges). A binary search finds the
+// last tempo change at or before `tick`: performances recorded with rubato can
+// carry thousands of tempo changes, and scanning them for every note made big
+// songs take seconds to prepare.
 function tickToSeconds(tick, tempos, division) {
   if (tempos.length === 0) {
     return tick * 500000.0 / 1000000.0 / division;
   }
-  var idx = 0;
-  for (var i = 0; i < tempos.length; i++) {
-    if (tempos[i].tick > tick) break;
-    idx = i;
+  var idx = 0, lo = 0, hi = tempos.length - 1;
+  while (lo <= hi) {
+    var mid = (lo + hi) >> 1;
+    if (tempos[mid].tick <= tick) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
   }
   var tc = tempos[idx];
   var dticks = tick - tc.tick;
@@ -4217,7 +4603,10 @@ function unwrapMaybe(value) {
 // window cannot be created for any reason.
 
 var UI = null;
-var UI_TIMER_SECONDS = 0.25;
+// The window refreshes 4 times a second while a song is armed or playing, and
+// once a second otherwise.
+var UI_TIMER_ACTIVE_SECONDS = 0.25;
+var UI_TIMER_IDLE_SECONDS = 1.0;
 var UI_WIDTH = 920;
 var UI_MARGIN = 24;
 var UI_CONTENT_WIDTH = UI_WIDTH - 2 * UI_MARGIN;
@@ -4229,7 +4618,7 @@ var UI_TAG = {
   modifier: 8, speed: 9, delay: 10, base: 11, resetBase: 12, liveLog: 13, arm: 14, stop: 15,
   openLog: 16, openFolder: 17, about: 18, pause: 19, speedButtons: 20, slower: 21, faster: 22,
   normalSpeed: 23, liveKeys: 24, access: 25, website: 26, helpManual: 27, helpStart: 28,
-  helpTrouble: 29, helpIssue: 30, demoBase: 100
+  helpTrouble: 29, helpIssue: 30, uninstall: 31, demoBase: 100
 };
 
 // The demo songs bundled in Contents/Resources/demo (build.sh copies them
@@ -4389,6 +4778,31 @@ var UI_STRINGS = {
     menuGettingStarted: "Getting Started",
     menuTroubleshooting: "Troubleshooting",
     menuReportIssue: "Report a Problem…",
+    menuUninstall: "Uninstall Roblox MIDI Piano Player…",
+    uninstallTitle: "Uninstall Roblox MIDI Piano Player?",
+    uninstallIntro: "This removes every version of the app from this Mac, and everything it left behind:",
+    uninstallSelf: "this app ({size})",
+    uninstallCopy: "1 other copy of the app, {versions} ({size})",
+    uninstallCopies: "{n} other copies of the app, {versions} ({size})",
+    uninstallVersionRange: "v{from} to v{to}",
+    uninstallZip: "1 downloaded archive ({size})",
+    uninstallZips: "{n} downloaded archives ({size})",
+    uninstallSource: "the first version's source folder ({size})",
+    uninstallSettings: "settings, logs and old song files ({size})",
+    uninstallLeftover: "1 file macOS kept for the app ({size})",
+    uninstallLeftovers: "{n} files macOS kept for the app ({size})",
+    uninstallPermission: "its Accessibility permission",
+    uninstallMore: "…and {n} more",
+    uninstallTotal: "In all: {size}. Everything goes to the Trash; empty it to free the space.",
+    uninstallNow: "Delete right away, without the Trash",
+    uninstallButton: "Uninstall",
+    uninstallDoneTitle: "Roblox MIDI Piano Player is uninstalled",
+    uninstallDoneTrash: "{n} items ({size}) are in the Trash. Empty the Trash to free the space.",
+    uninstallDoneTrashOne: "1 item ({size}) is in the Trash. Empty the Trash to free the space.",
+    uninstallDoneNow: "{n} items ({size}) were deleted.",
+    uninstallDoneNowOne: "1 item ({size}) was deleted.",
+    uninstallDoneFailed: "These could not be removed; you can remove them in Finder:",
+    uninstallDoneDock: "If you kept the app in the Dock, drag its icon out of it. The app now quits.",
     cancel: "Cancel",
     save: "Save",
     menuAbout: "About Roblox MIDI Piano Player",
@@ -4550,6 +4964,31 @@ var UI_STRINGS = {
     menuGettingStarted: "Bien démarrer",
     menuTroubleshooting: "Dépannage",
     menuReportIssue: "Signaler un problème…",
+    menuUninstall: "Désinstaller Roblox MIDI Piano Player…",
+    uninstallTitle: "Désinstaller Roblox MIDI Piano Player ?",
+    uninstallIntro: "Ceci retire de ce Mac toutes les versions de l'app, et tout ce qu'elles ont laissé :",
+    uninstallSelf: "cette app ({size})",
+    uninstallCopy: "1 autre copie de l'app, {versions} ({size})",
+    uninstallCopies: "{n} autres copies de l'app, {versions} ({size})",
+    uninstallVersionRange: "v{from} à v{to}",
+    uninstallZip: "1 archive téléchargée ({size})",
+    uninstallZips: "{n} archives téléchargées ({size})",
+    uninstallSource: "le dossier source de la première version ({size})",
+    uninstallSettings: "les réglages, journaux et anciens fichiers de morceaux ({size})",
+    uninstallLeftover: "1 fichier gardé par macOS pour l'app ({size})",
+    uninstallLeftovers: "{n} fichiers gardés par macOS pour l'app ({size})",
+    uninstallPermission: "son autorisation d'accessibilité",
+    uninstallMore: "…et {n} de plus",
+    uninstallTotal: "En tout : {size}. Tout va dans la corbeille ; vide-la pour libérer la place.",
+    uninstallNow: "Supprimer tout de suite, sans la corbeille",
+    uninstallButton: "Désinstaller",
+    uninstallDoneTitle: "Roblox MIDI Piano Player est désinstallé",
+    uninstallDoneTrash: "{n} éléments ({size}) sont dans la corbeille. Vide-la pour libérer la place.",
+    uninstallDoneTrashOne: "1 élément ({size}) est dans la corbeille. Vide-la pour libérer la place.",
+    uninstallDoneNow: "{n} éléments ({size}) ont été supprimés.",
+    uninstallDoneNowOne: "1 élément ({size}) a été supprimé.",
+    uninstallDoneFailed: "Ceux-ci n'ont pas pu être retirés ; tu peux les retirer dans le Finder :",
+    uninstallDoneDock: "Si tu avais gardé l'app dans le Dock, fais glisser son icône hors du Dock. L'app se ferme maintenant.",
     cancel: "Annuler",
     save: "Enregistrer",
     menuAbout: "À propos de Roblox MIDI Piano Player",
@@ -4642,8 +5081,26 @@ function uiRegisterClasses() {
             return 1; // NSTerminateNow
           }
         },
-        // A key held down in the window never gets its key-up once the window
-        // loses focus, so everything still pressed in Roblox is let go here.
+        // macOS reports an app that just opened: if it is Roblox, live keys
+        // connect to it at once, with no scan of every running app.
+        'uiAppLaunched:': {
+          types: ['void', ['id']],
+          implementation: function(note) {
+            uiSafely(function() {
+              if (!LIVE) return;
+              var launched = null;
+              try { launched = note.userInfo.objectForKey($("NSWorkspaceApplicationKey")); } catch (_) {}
+              if (launched && !launched.isNil()) {
+                var info = runningAppInfo(launched);
+                if (!isRobloxApplicationInfo(info)) return;
+                LIVE.launched = info;
+              } else {
+                LIVE.scanWanted = true;
+              }
+              uiRefreshLiveStatus(false);
+            }, true);
+          }
+        },
         // Ends text editing so keys go back to the piano (see uiEndEditingSoon).
         'uiEndEditing:': {
           types: ['void', ['id']],
@@ -4651,6 +5108,9 @@ function uiRegisterClasses() {
             try { uiEndEditingOf(field); } catch (_) {}
           }
         },
+        // A key held down in the window never gets its key-up once the window
+        // loses focus or a menu opens, so everything still pressed in Roblox
+        // is let go here.
         'uiMenuWillTrack:': {
           types: ['void', ['id']],
           implementation: function(note) { uiSafely(liveReleaseAll, true); }
@@ -4816,7 +5276,8 @@ function mainWindowUI(options) {
     paused: false,          // the pause requested from this window for `controlJobId`
     controlJobId: "",
     trusted: accessibilityTrustedValue(),
-    ticks: 0,
+    nextTrustCheck: 0,
+    timerInterval: 0,
     kb: null,               // the piano picture's model and geometry, for clicks and highlights
     highlights: {},         // key index -> overlay view, while a key is pressed
     w: {},
@@ -4831,6 +5292,9 @@ function mainWindowUI(options) {
   uiCleanupStaleJobs();
   UI.controller = $.RMPPController.alloc.init;
   nsApp.setDelegate(UI.controller);
+  try {
+    $.NSWorkspace.sharedWorkspace.notificationCenter.addObserverSelectorNameObject(UI.controller, 'uiAppLaunched:', $("NSWorkspaceDidLaunchApplicationNotification"), $());
+  } catch (_) {}
   // An open menu (menu bar or pop-up) takes the key-ups, so live keys let go first.
   try {
     $.NSNotificationCenter.defaultCenter.addObserverSelectorNameObject(UI.controller, 'uiMenuWillTrack:', $("NSMenuDidBeginTrackingNotification"), $());
@@ -4859,7 +5323,7 @@ function mainWindowUI(options) {
   } else {
     nsApp.activateIgnoringOtherApps(true);
   }
-  UI.timer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(UI_TIMER_SECONDS, UI.controller, 'uiTimer:', null, true);
+  uiStartTimer(UI_TIMER_IDLE_SECONDS);
   uiWriteWindowInfo("shown");
 
   if (options.midiPath) {
@@ -4921,8 +5385,12 @@ function uiRememberWindowPosition() {
   uiSaveConfig();
 }
 
-// A worker that crashed long ago can leave its job file behind. With nothing
-// playing, job files older than STALE_JOB_SECONDS are removed.
+// A worker that crashed long ago can leave its job file behind (older versions
+// did, and wrote them with indentation: they can add up to tens of MB). With
+// nothing playing, job files older than STALE_JOB_SECONDS are removed, and so
+// is the backup log an early version kept.
+var LEGACY_SUPPORT_FILES = ["playback.log.bak"];
+
 function uiCleanupStaleJobs() {
   try {
     if (getPlaybackStatus(UI.supportDir).active) return;
@@ -4933,6 +5401,11 @@ function uiCleanupStaleJobs() {
     var removed = 0;
     for (var i = 0; i < Number(names.count); i++) {
       var name = String(unwrapMaybe(names.objectAtIndex(i)) || "");
+      if (LEGACY_SUPPORT_FILES.indexOf(name) >= 0) {
+        removeFileIfExists(UI.supportDir + "/" + name);
+        removed++;
+        continue;
+      }
       if (name.indexOf(PLAYBACK_JOB_PREFIX) !== 0 || name.slice(-5) !== ".json") continue;
       var path = UI.supportDir + "/" + name;
       var attrs = fm.attributesOfItemAtPathError($(path), null);
@@ -4943,24 +5416,41 @@ function uiCleanupStaleJobs() {
         removed++;
       }
     }
-    if (removed > 0) appendPlaybackLog(UI.supportDir, "Removed " + removed + " leftover playback job file" + (removed === 1 ? "" : "s") + ".");
+    if (removed > 0) appendPlaybackLog(UI.supportDir, "Removed " + removed + " leftover file" + (removed === 1 ? "" : "s") + " (old playback jobs and logs).");
   } catch (_) {
     // Housekeeping only.
   }
 }
 
-function uiInstallDockIcon() {
+// The app's icon, from the bundle. The process is osascript, so macOS would
+// show osascript's icon in the Dock and a generic one in alerts without it.
+function uiAppIcon() {
+  if (UI.appIcon !== undefined) return UI.appIcon;
+  UI.appIcon = null;
   try {
     var main = currentMainScriptPath();
-    if (!main) return;
-    var dir = main.slice(0, main.lastIndexOf("/"));
-    var icns = dir + "/AppIcon.icns";
-    if (!$.NSFileManager.defaultManager.fileExistsAtPath($(icns))) return;
-    var img = $.NSImage.alloc.initWithContentsOfFile($(icns));
-    if (img && !img.isNil()) UI.nsApp.setApplicationIconImage(img);
+    var icns = main ? main.slice(0, main.lastIndexOf("/")) + "/AppIcon.icns" : "";
+    if (icns && $.NSFileManager.defaultManager.fileExistsAtPath($(icns))) {
+      var img = $.NSImage.alloc.initWithContentsOfFile($(icns));
+      if (img && !img.isNil()) UI.appIcon = img;
+    }
   } catch (_) {
-    // The Dock icon is cosmetic.
+    // The icon is cosmetic.
   }
+  return UI.appIcon;
+}
+
+function uiInstallDockIcon() {
+  var img = uiAppIcon();
+  if (img) UI.nsApp.setApplicationIconImage(img);
+}
+
+// Every alert shows the app's icon.
+function uiNewAlert() {
+  var alert = $.NSAlert.alloc.init;
+  var icon = uiAppIcon();
+  if (icon) alert.setIcon(icon);
+  return alert;
 }
 
 // --- Menu bar ----------------------------------------------------------------
@@ -4980,6 +5470,8 @@ function uiBuildMenu() {
   menubar.addItem(appItem);
   var appMenu = $.NSMenu.alloc.init;
   appMenu.addItem(uiMenuItem(T("menuAbout"), 'uiAction:', "", UI_TAG.about));
+  appMenu.addItem($.NSMenuItem.separatorItem);
+  appMenu.addItem(uiMenuItem(T("menuUninstall"), 'uiAction:', "", UI_TAG.uninstall));
   appMenu.addItem($.NSMenuItem.separatorItem);
   appMenu.addItem(uiMenuItem(T("menuQuit"), 'terminate:', "q"));
   appItem.setSubmenu(appMenu);
@@ -5499,8 +5991,24 @@ function uiRecomputeSong() {
   UI.song.alt = null;
   if (fit.profile.builtIn) {
     var otherMode = normalizeKeyboardMode(cfg.keyboardMode) === "extended" ? "classic" : "extended";
-    try { UI.song.alt = uiComputeFit(UI.song.parsed, cfg, otherMode, UI.transpose); } catch (_) { UI.song.alt = null; }
+    try { UI.song.alt = uiCountPlayable(UI.song.parsed, cfg, otherMode, UI.transpose); } catch (_) { UI.song.alt = null; }
   }
+}
+
+// How many notes a mode would play. Only that count is shown for the other
+// mode, so it comes from the song's note counts (the same sum buildSchedule
+// makes note by note) instead of a second schedule.
+function uiCountPlayable(parsed, cfg, mode, transpose) {
+  var effective = uiEffectiveConfig(cfg, mode);
+  var profile = resolveKeyboardProfile(effective);
+  var analysis = analyzeNotes(parsed.notes, profile, effective.baseMIDINote, effective.noteRecognitionMode);
+  var first = analysis.detectedBase - Math.round(Number(transpose) || 0) - (profile.anchorIndex || 0);
+  var mapped = 0;
+  for (var i = 0; i < profile.steps.length; i++) {
+    var note = first + i;
+    if (note >= 0 && note < 128 && profile.steps[i] && isFiniteNumber(profile.steps[i].code)) mapped += analysis.counts[note];
+  }
+  return { built: { mapped: mapped } };
 }
 
 function uiRefreshSong() {
@@ -5680,10 +6188,20 @@ function pictureColor(r, g, b, a) {
   return $.NSColor.colorWithCalibratedRedGreenBlueAlpha(r, g, b, a == null ? 1 : a);
 }
 
-function pictureText(text, x, y, font, color, align) {
+// The text attributes for one font and colour. The picture draws ~90 labels,
+// so it builds each dictionary once and reuses it (pictureTextWith).
+function pictureAttrs(font, color) {
   var attrs = $.NSMutableDictionary.alloc.init;
   attrs.setObjectForKey(font, $.NSFontAttributeName);
   attrs.setObjectForKey(color, $.NSForegroundColorAttributeName);
+  return attrs;
+}
+
+function pictureText(text, x, y, font, color, align) {
+  return pictureTextWith(text, x, y, pictureAttrs(font, color), align);
+}
+
+function pictureTextWith(text, x, y, attrs, align) {
   var s = $(String(text));
   var size = s.sizeWithAttributes(attrs);
   var width = Number(size.width);
@@ -5785,6 +6303,11 @@ function renderPianoPicture(model, W, H) {
     var fontBlack = $.NSFont.monospacedSystemFontOfSizeWeight(7.5, 0);
     var fontCaption = $.NSFont.systemFontOfSize(9.5);
     var fontFooter = $.NSFont.boldSystemFontOfSize(9.5);
+    var blackLabelUsed = pictureColor(0.92, 1.0, 0.92);
+    var attrsWhite = pictureAttrs(fontWhite, whiteLabel);
+    var attrsWhiteLit = pictureAttrs(fontWhite, whiteLabelLit);
+    var attrsBlack = pictureAttrs(fontBlack, blackLabel);
+    var attrsBlackLit = pictureAttrs(fontBlack, blackLabelUsed);
 
     // White keys first, then black keys on top.
     for (var i = 0; i < keys.length; i++) {
@@ -5794,7 +6317,7 @@ function renderPianoPicture(model, W, H) {
       pictureRoundedRect(key.x + 0.75, keysBottom, key.w - 1.5, keysH, 2, fill);
       var labelColor = key.used ? whiteLabelLit : whiteLabel;
       var cx = key.x + key.w / 2;
-      pictureText(key.label, cx, keysBottom + 4, fontWhite, labelColor, "center");
+      pictureTextWith(key.label, cx, keysBottom + 4, key.used ? attrsWhiteLit : attrsWhite, "center");
       if (key.ctrl) pictureDot(cx, keysBottom + 17.5, 1.5, labelColor);
     }
     for (var j = 0; j < keys.length; j++) {
@@ -5809,8 +6332,8 @@ function renderPianoPicture(model, W, H) {
       outline.setStroke;
       bpath.stroke;
       var bcx = bk.x + bk.w / 2;
-      var blc = bk.used ? pictureColor(0.92, 1.0, 0.92) : blackLabel;
-      pictureText(bk.label, bcx, by + 3, fontBlack, blc, "center");
+      var blc = bk.used ? blackLabelUsed : blackLabel;
+      pictureTextWith(bk.label, bcx, by + 3, bk.used ? attrsBlackLit : attrsBlack, "center");
       if (bk.ctrl) pictureDot(bcx, by + 14.5, 1.3, blc);
     }
 
@@ -5872,12 +6395,17 @@ function liveReset() {
     down: {},              // key code -> piano-picture key index (-1 if none), keyboard keys held
     mouseIndex: -1,        // piano-picture key held with the mouse
     mouseCode: 0,
+    scanWanted: true,      // read every running app at the next lookup
+    launched: null,        // a Roblox app macOS just reported as opened
     testSender: null       // the self test records key events here instead
   };
 }
 
 // The sender for the running Roblox, looked up again when Roblox quits or
-// starts (at most every UI_ROBLOX_LOOKUP_SECONDS unless forced).
+// starts. Roblox is found three ways, from the cheapest: macOS reports every
+// app that opens (uiAppLaunched); the Roblox player is asked for by its
+// bundle identifier at most every UI_ROBLOX_LOOKUP_SECONDS; and every running
+// app is read only at the first lookup, when forced, or after an app opened.
 function liveSender(force) {
   if (LIVE.testSender) return LIVE.testSender;
   if (LIVE.sender && LIVE.pid > 0 && isProcessAlive(LIVE.pid)) return LIVE.sender;
@@ -5887,11 +6415,18 @@ function liveSender(force) {
     LIVE.pid = 0;
     LIVE.modifiers = { shift: false, ctrl: false, alt: false };
   }
-  var now = nowSeconds();
-  if (!force && now - LIVE.lastLookup < UI_ROBLOX_LOOKUP_SECONDS) return null;
-  LIVE.lastLookup = now;
-  var target = findRobloxPlayerProcess();
-  if (!target || !(target.pid > 0)) return null;
+  var target = null;
+  if (LIVE.launched) {
+    target = LIVE.launched;
+    LIVE.launched = null;
+  } else {
+    var now = nowSeconds();
+    if (!force && !LIVE.scanWanted && now - LIVE.lastLookup < UI_ROBLOX_LOOKUP_SECONDS) return null;
+    LIVE.lastLookup = now;
+    target = findRobloxPlayerProcess(!force && !LIVE.scanWanted);
+    LIVE.scanWanted = false;
+  }
+  if (!target || !(target.pid > 0) || !isProcessAlive(target.pid)) return null;
   try {
     LIVE.sender = createDirectKeySender(target.pid, "", UI.cfg.keySendMethod);
     LIVE.pid = target.pid;
@@ -6278,17 +6813,36 @@ function uiRefreshPlayback() {
 
 function uiOnTimer() {
   if (!UI || UI.busy) return;
-  UI.ticks++;
-  if ((UI.ticks % 8) === 0) {
+  var now = nowSeconds();
+  // The permission: every 2 s while it is missing, so the hint goes away as
+  // soon as it is given; every 10 s once granted.
+  if (now >= UI.nextTrustCheck) {
     // The self test can stand in for a Mac without the permission.
     var trusted = UI.trustOverride != null ? UI.trustOverride : accessibilityTrustedValue();
+    UI.nextTrustCheck = now + (trusted === false ? 2 : 10);
     if (trusted !== UI.trusted) {
       UI.trusted = trusted;
       UI.statusKey = "";
     }
   }
   uiRefreshPlayback();
-  if ((UI.ticks % 2) === 0) uiRefreshLiveStatus(false);
+  uiRefreshLiveStatus(false);
+  uiAdjustTimer();
+}
+
+// A repeating timer with some leeway, so macOS can group its wake-ups with
+// other work and save energy.
+function uiStartTimer(seconds) {
+  try { if (UI.timer) UI.timer.invalidate; } catch (_) {}
+  UI.timer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(seconds, UI.controller, 'uiTimer:', null, true);
+  try { UI.timer.setTolerance(seconds * 0.2); } catch (_) {}
+  UI.timerInterval = seconds;
+}
+
+function uiAdjustTimer() {
+  var active = !!(UI.busy || (UI.playback && UI.playback.active));
+  var wanted = active ? UI_TIMER_ACTIVE_SECONDS : UI_TIMER_IDLE_SECONDS;
+  if (wanted !== UI.timerInterval) uiStartTimer(wanted);
 }
 
 function uiPump(seconds) {
@@ -6307,7 +6861,7 @@ function uiSafely(fn, silent) {
 }
 
 function uiAlert(title, text, style) {
-  var alert = $.NSAlert.alloc.init;
+  var alert = uiNewAlert();
   alert.setMessageText($(String(title || APP_NAME)));
   alert.setInformativeText($(String(text || "")));
   alert.setAlertStyle(style === "critical" ? $.NSAlertStyleCritical : (style === "warning" ? $.NSAlertStyleWarning : $.NSAlertStyleInformational));
@@ -6357,8 +6911,91 @@ function uiDispatchAction(sender) {
     else if (tag === UI_TAG.helpStart) uiOpenURL(DOCS_URL + "getting-started.md");
     else if (tag === UI_TAG.helpTrouble) uiOpenURL(DOCS_URL + "troubleshooting.md");
     else if (tag === UI_TAG.helpIssue) uiOpenURL(APP_REPO_URL + "/issues");
+    else if (tag === UI_TAG.uninstall) uiOnUninstall();
     else if (tag >= UI_TAG.demoBase && tag < UI_TAG.demoBase + DEMO_SONGS.length) uiOnDemo(tag - UI_TAG.demoBase);
   });
+}
+
+// Roblox MIDI Piano Player › Uninstall…: the list of everything found, then,
+// if confirmed, everything removed and the app quits.
+function uiOnUninstall() {
+  var plan = uninstallPlan();
+  var alert = uiUninstallAlert(plan);
+  if (UI.selfTest) {
+    // Shown without waiting for an answer, pictured, and closed: nothing is removed.
+    alert.layout;
+    alert.window.setLevel(8);
+    alert.window.orderFrontRegardless;
+    UI.uninstallPreview = { message: uiUninstallMessage(plan), plan: plan, window: alert.window };
+    return;
+  }
+  if (Number(alert.runModal) !== 1001) return;                   // NSAlertSecondButtonReturn
+  var now = Number(alert.suppressionButton.state) === 1;
+  liveReleaseAll();
+  try { if (UI.timer) UI.timer.invalidate; } catch (_) {}
+  var result = uninstallRun(plan, now);
+  uiAlert(T("uninstallDoneTitle"), uiUninstallDoneMessage(result), result.failed.length ? "warning" : "informational");
+  UI.nsApp.terminate(null);
+}
+
+function uiUninstallAlert(plan) {
+  var alert = uiNewAlert();
+  alert.setMessageText($(T("uninstallTitle")));
+  alert.setInformativeText($(uiUninstallMessage(plan)));
+  alert.setAlertStyle($.NSAlertStyleWarning);
+  var cancel = alert.addButtonWithTitle($(T("cancel")));         // Return cancels
+  cancel.setKeyEquivalent($(String.fromCharCode(27)));           // and so does Escape
+  var go = alert.addButtonWithTitle($(T("uninstallButton")));
+  go.setKeyEquivalent($(""));
+  try { go.setHasDestructiveAction(true); } catch (_) {}
+  alert.setShowsSuppressionButton(true);
+  alert.suppressionButton.setTitle($(T("uninstallNow")));
+  return alert;
+}
+
+function uiUninstallMessage(plan) {
+  var lines = [T("uninstallIntro")];
+  function size(items) { return formatBytes(items.reduce(function(sum, item) { return sum + item.bytes; }, 0)); }
+  function of(kind) { return plan.items.filter(function(item) { return item.kind === kind; }); }
+  var self = plan.items.filter(function(item) { return item.self; });
+  var copies = plan.items.filter(function(item) { return item.kind === "app" && !item.self; });
+  if (self.length) lines.push("• " + T("uninstallSelf", { size: size(self) }));
+  if (copies.length) {
+    var versions = copies.map(function(item) { return item.version; }).filter(function(v) { return v; });
+    versions.sort(function(a, b) {
+      var x = a.split(".").map(Number), y = b.split(".").map(Number);
+      for (var i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+      return 0;
+    });
+    var range = versions.length === 0 ? "" : (versions[0] === versions[versions.length - 1] ? "v" + versions[0] : T("uninstallVersionRange", { from: versions[0], to: versions[versions.length - 1] }));
+    lines.push("• " + T(copies.length === 1 ? "uninstallCopy" : "uninstallCopies", { n: copies.length, versions: range, size: size(copies) }));
+  }
+  var zips = of("zip");
+  if (zips.length) lines.push("• " + T(zips.length === 1 ? "uninstallZip" : "uninstallZips", { n: zips.length, size: size(zips) }));
+  if (of("source").length) lines.push("• " + T("uninstallSource", { size: size(of("source")) }));
+  if (of("settings").length) lines.push("• " + T("uninstallSettings", { size: size(of("settings")) }));
+  if (of("leftover").length) lines.push("• " + T(of("leftover").length === 1 ? "uninstallLeftover" : "uninstallLeftovers", { n: of("leftover").length, size: size(of("leftover")) }));
+  if (plan.permissionIds.length) lines.push("• " + T("uninstallPermission"));
+  lines.push("");
+  var shown = plan.items.slice(0, 14);
+  shown.forEach(function(item) { lines.push(uninstallItemLine(item)); });
+  if (plan.items.length > shown.length) lines.push(T("uninstallMore", { n: plan.items.length - shown.length }));
+  lines.push("");
+  lines.push(T("uninstallTotal", { size: formatBytes(plan.bytes) }));
+  return lines.join("\n");
+}
+
+function uiUninstallDoneMessage(result) {
+  var key = (result.now ? "uninstallDoneNow" : "uninstallDoneTrash") + (result.removed.length === 1 ? "One" : "");
+  var lines = [T(key, { n: result.removed.length, size: formatBytes(result.bytes) })];
+  if (result.failed.length) {
+    lines.push("");
+    lines.push(T("uninstallDoneFailed"));
+    result.failed.forEach(function(item) { lines.push(uninstallItemLine(item)); });
+  }
+  lines.push("");
+  lines.push(T("uninstallDoneDock"));
+  return lines.join("\n");
 }
 
 function uiOnDemo(index) {
@@ -6634,6 +7271,7 @@ function uiOnArm() {
     UI.statusKey = "";
     uiRefreshPlayback();
     uiUpdateButtons();
+    uiAdjustTimer();
   }
 }
 
@@ -6658,6 +7296,7 @@ function uiOnStop() {
   UI.paused = false;
   UI.statusKey = "";
   uiRefreshPlayback();
+  uiAdjustTimer();
   if (result.wasActive && !result.dead) {
     uiAlert(APP_NAME, T("stopNotDead", { pid: result.pid }), "warning");
   }
@@ -6674,7 +7313,7 @@ function uiOnOpenFolder() {
 }
 
 function uiOnAbout() {
-  var alert = $.NSAlert.alloc.init;
+  var alert = uiNewAlert();
   alert.setMessageText($(T("aboutTitle", { version: "v" + APP_VERSION })));
   alert.setInformativeText($(T("aboutText")));
   alert.setAlertStyle($.NSAlertStyleInformational);
@@ -6694,8 +7333,8 @@ function uiOnAbout() {
 function uiSelfTest(args) {
   var midi = args.length >= 1 ? String(args[0]) : "";
   var prefix = args.length >= 2 ? String(args[1]) : (ensureSupportDir() + "/ui_selftest");
-  var arm = args.length >= 3 && String(args[2]).toLowerCase() === "arm";
-  return mainWindowUI({ selfTest: { midi: midi, prefix: prefix, arm: arm } });
+  var flags = args.slice(2).map(function(a) { return String(a).toLowerCase(); });
+  return mainWindowUI({ selfTest: { midi: midi, prefix: prefix, arm: flags.indexOf("arm") >= 0, idle: flags.indexOf("idle") >= 0 } });
 }
 
 function uiCaptureWindow(path) {
@@ -6964,6 +7603,22 @@ function uiRunSelfTest() {
       report.stoppedState = readPlaybackState(UI.supportDir);
       report.controlAfterStop = readPlaybackControl(UI.supportDir);
     }
+    // The uninstaller's list, pictured, then closed without removing anything.
+    uiOnUninstall();
+    if (UI.uninstallPreview) {
+      uiPump(0.4);
+      var alertShot = st.prefix + "_15_uninstall.png";
+      var task = $.NSTask.alloc.init;
+      task.setLaunchPath($('/usr/sbin/screencapture'));
+      task.setArguments($(['-x', '-o', '-l', String(Number(UI.uninstallPreview.window.windowNumber)), alertShot]));
+      task.launch;
+      task.waitUntilExit;
+      report.uninstallMessage = UI.uninstallPreview.message;
+      report.uninstallItems = UI.uninstallPreview.plan.items.map(function(item) { return item.kind + " " + item.path; });
+      report.uninstallCaptured = Number(task.terminationStatus) === 0;
+      UI.uninstallPreview.window.orderOut(null);
+    }
+
     // The menu bar, and a demo song opened the way File › Demo Songs does.
     var bar = UI.nsApp.mainMenu;
     report.menus = [];
@@ -6975,6 +7630,30 @@ function uiRunSelfTest() {
     }
     uiDispatchAction(UI.nsApp.mainMenu.itemAtIndex(1).submenu.itemAtIndex(1).submenu.itemAtIndex(1));
     report.demoLoaded = UI.song ? UI.song.name + " (" + UI.song.parsed.notes.length + " notes)" : "";
+    // "idle": the window left alone for 20 s with its normal timers, live
+    // keys on and no song, and the CPU time it used meanwhile.
+    if (st.idle) {
+      LIVE.testSender = null;
+      UI.cfg.liveKeys = true;
+      UI.statusKey = "";
+      uiRefreshPlayback();
+      uiAdjustTimer();
+      var cpuNow = function() {
+        var t = trim(app.doShellScript("/bin/ps -o cputime= -p " + currentProcessId()));
+        var parts = t.split(":").map(Number);
+        return parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1];
+      };
+      var cpu0 = cpuNow(), wall0 = nowSeconds();
+      uiPump(20);
+      var cpu1 = cpuNow(), wall1 = nowSeconds();
+      report.idle = {
+        seconds: +(wall1 - wall0).toFixed(1),
+        cpuSeconds: +(cpu1 - cpu0).toFixed(2),
+        cpuPercent: +((cpu1 - cpu0) / (wall1 - wall0) * 100).toFixed(2),
+        timerInterval: UI.timerInterval,
+        rssKB: parseInt(trim(app.doShellScript("/bin/ps -o rss= -p " + currentProcessId())), 10)
+      };
+    }
     report.windowHeight = UI.windowHeight;
     report.language = uiEffectiveLanguage();
   } finally {

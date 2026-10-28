@@ -17,7 +17,7 @@ Nothing else needs installing. To build the app from its source instead of downl
 
 ### Download
 
-1. Download `Roblox-MIDI-Piano-Player-2.1.1.zip` from the [latest release](https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player/releases/latest).
+1. Download `Roblox-MIDI-Piano-Player-2.2.0.zip` from the [latest release](https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player/releases/latest).
 2. Double-click it to unzip it, and move **Roblox MIDI Piano Player** into your **Applications** folder.
 
 ### Build it yourself
@@ -103,7 +103,24 @@ git pull
 
 ## 8. Uninstalling
 
-Quit the app, move it to the Trash, and delete its folder in `~/Library/Application Support/` if you want your settings gone too. Remove it from **System Settings › Privacy & Security › Accessibility** with the **−** button.
+The app removes itself, every older version and everything they left, so nothing is left behind when you want the space back. Choose **Roblox MIDI Piano Player › Uninstall Roblox MIDI Piano Player…**. It first lists what it found, with sizes:
+
+- this app, and every other copy of it, of any version, from the first one: in Applications, Downloads, Desktop and Documents, and anywhere else Spotlight or macOS knows of a copy;
+- downloaded archives of it (`Roblox-MIDI-Piano-Player-….zip` and older ones);
+- the source folder the very first version came in, if it holds nothing else;
+- its settings folder, with the logs and any song files old versions left behind;
+- the files macOS keeps for an app (preferences, saved window state, caches), when there are any;
+- its Accessibility permission.
+
+**Cancel** is the default. **Uninstall** moves everything to the Trash (empty it to free the space), or deletes it right away if you tick **Delete right away, without the Trash**. A song that is playing is stopped first, other open copies of the app are closed, and the app quits at the end. Only those kinds of item are ever touched: a folder of yours that happens to hold a copy of the app keeps everything else.
+
+The same from Terminal, which first only lists:
+
+```bash
+"/Applications/Roblox MIDI Piano Player.app/Contents/MacOS/RobloxMidiPianoPlayer" --uninstall
+```
+
+Add `--yes` to move it all to the Trash, or `--yes --now` to delete it right away. If the app was kept in the Dock, drag its icon out of it afterwards.
 
 ## 9. Command-line options and environment variables
 
@@ -114,7 +131,8 @@ The launcher passes its arguments on to the app, so these work with the app's ex
 | `--midi FILE` | opens the window with this song loaded |
 | `--dialogs` | the older, dialog-based way of choosing and playing a song |
 | `--selftest-senders [background]` | plays a short phrase into a running Roblox piano with Quartz, then with Accessibility, and logs how fast each was; `background` puts Roblox behind another app first |
-| `--ui-selftest MIDI PREFIX [arm]` | builds the window, goes through its features and saves a picture after each step (see [Building it yourself](building.md#4-testing)) |
+| `--ui-selftest MIDI PREFIX [arm] [idle]` | builds the window, goes through its features and saves a picture after each step (see [Building it yourself](building.md#4-testing)) |
+| `--uninstall [--yes] [--now]` | lists everything the uninstaller would remove; `--yes` removes it to the Trash, `--yes --now` deletes it ([section 8](#8-uninstalling)) |
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

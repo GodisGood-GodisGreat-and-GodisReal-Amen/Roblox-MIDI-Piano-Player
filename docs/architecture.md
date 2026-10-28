@@ -7,7 +7,7 @@ A map of the code for anyone who wants to change it.
 ```
 Roblox MIDI Piano Player.app
   Contents/MacOS/RobloxMidiPianoPlayer   shell launcher: exec osascript main.js
-  Contents/Resources/main.js             the whole app (src/main.js)
+  Contents/Resources/main.js             the whole app (src/main.js, compacted)
 
   osascript main.js                              osascript main.js --worker job.json
  ┌──────────────────────────────────┐   JSON    ┌──────────────────────────────────┐
@@ -27,7 +27,7 @@ Two rules shape everything:
 
 ## One file, two processes
 
-`src/main.js` is the whole app, a JavaScript for Automation (JXA) script. The bundle's launcher sets `ROBLOX_MIDI_PLAYER_EXECUTABLE` and starts it with `osascript`, natively on Apple silicon (`arch -arm64`): LaunchServices would otherwise start a script bundle under Rosetta, where JXA's Objective-C subclassing hangs.
+`src/main.js` is the whole app, a JavaScript for Automation (JXA) script. The bundle holds a compact copy of it, made by `tools/minify.js`: comments, indentation and blank lines removed (a quarter smaller), the line breaks between tokens kept so that JavaScript reads it exactly as the source, and the result checked token by token before it is written. The bundle's launcher sets `ROBLOX_MIDI_PLAYER_EXECUTABLE` and starts it with `osascript`, natively on Apple silicon (`arch -arm64`): LaunchServices would otherwise start a script bundle under Rosetta, where JXA's Objective-C subclassing hangs.
 
 `run(argv)` picks the role:
 
@@ -37,6 +37,7 @@ Two rules shape everything:
 | `--worker JOB` | the background player (`workerMain`) |
 | `--dialogs` | the older dialog-based flow (`main`); also the fallback when the window cannot be built |
 | `--selftest-senders [background]` | plays a phrase into Roblox with each key sender (`selfTestSenders`) |
+| `--uninstall [--yes] [--now]` | lists, then removes, every version of the app (`uninstallFromCommandLine`) |
 | `--ui-selftest MIDI PREFIX [arm]` | the window's self test (`uiRunSelfTest`) |
 
 The player is a process of its own because osascript has one thread: the window's event loop and a loop that must press a key within a millisecond of its time cannot share it. It also lets a song carry on when the window closes. **Arm playback** (`armBackgroundPlayback`) writes the song, already mapped to keys, to `playback_job_<id>.json`, writes a small launch script, and starts it with `nohup`. The script `exec`s osascript, so the process number it reports is the player itself and Stop can signal it.
@@ -45,7 +46,7 @@ The player is a process of its own because osascript has one thread: the window'
 
 `parseMIDIFile` reads formats 0, 1 and 2 with any number of tracks: running status, tempo changes, system exclusive and meta events. Each note-on is paired with the oldest open note-on of the same channel and pitch (a queue, because a pitch is often struck again before it is released), which gives every note its real length. Notes on channel 10, the drums, are left out when the file has other notes. Files timed in SMPTE frames are refused with a clear message.
 
-`annotateTempoSeconds` and `tickToSeconds` turn ticks into seconds through the tempo map, so tempo changes inside a song are followed.
+`annotateTempoSeconds` and `tickToSeconds` turn ticks into seconds through the tempo map, so tempo changes inside a song are followed. `tickToSeconds` finds the tempo in force with a binary search: performances recorded with rubato can carry thousands of tempo changes, and a scan of all of them for every note made such a song take a second to prepare.
 
 ## Mapping notes to keys
 
@@ -55,7 +56,7 @@ The saved **Note of key 1** (C2 = 36 by default) is the note of key `1` in both 
 
 ## The background player
 
-`workerMain` writes its state to `playback_state.json` at every step: `waiting` (for Roblox), `delay` (the after-click delay), `playing`, then `finished`, `stopped` or `error`. `waitForRobloxFrontmost` looks at the front app every 50 ms and starts once a Roblox app has stayed in front for 0.15 s. From then on the keys go to that process by its id, so the user may switch apps.
+`workerMain` writes its state to `playback_state.json` at every step: `waiting` (for Roblox), `delay` (the after-click delay), `playing`, then `finished`, `stopped` or `error`. `waitForRobloxFrontmost` looks at the front app every 50 ms, reading its details only when another app comes to the front, and starts once a Roblox app has stayed in front for 0.15 s. From then on the keys go to that process by its id, so the user may switch apps.
 
 ### The timing loop
 
@@ -105,11 +106,11 @@ The player reports its position and the song's length in seconds of the song at 
 | `RMPPPianoView` | the piano picture; mouse down, drag and up press keys |
 | `RMPPDropView` | the window's content view; accepts dropped MIDI files |
 
-A timer runs every 0.25 s: it reads the player's state, re-checks the Accessibility permission every 2 s and looks for Roblox for live keys. The piano picture is drawn into a bitmap at twice the screen resolution (`renderPianoPicture`); `pianoLayout` gives the same geometry to the drawing and to mouse clicks, and pressed keys are small coloured boxes inside the picture's view, so the picture is not redrawn for every key. Every setting is saved to `config.json` as it changes, through `sanitizeConfig`, which also brings any value back into range.
+A timer reads the player's state 4 times a second while a song is armed or playing and once a second otherwise, with some leeway so that macOS can group its wake-ups; it re-checks the Accessibility permission every 2 s while it is missing and every 10 s once given. When a song loads or a setting changes, the current mode gets a full schedule, and the other mode only its note count, summed from the song's note counts (`uiCountPlayable`), which is all the window shows of it. The piano picture is drawn into a bitmap at twice the screen resolution (`renderPianoPicture`); `pianoLayout` gives the same geometry to the drawing and to mouse clicks, and pressed keys are small coloured boxes inside the picture's view, so the picture is not redrawn for every key. Every setting is saved to `config.json` as it changes, through `sanitizeConfig`, which also brings any value back into range.
 
 ## Live keys
 
-`liveHandleKeyEvent` decides what happens to each key event the window gets. A key goes to Roblox only if it is one of the current piano's keys or Space, Command is not held, and no text field is being edited; auto-repeat is ignored. Modifiers are sent with the key that needs them, and let go when released on the keyboard. `liveMouse` does the same for the piano picture, with a glide from key to key. The global `LIVE` remembers every key sent down and the modifier state; `liveReleaseAll` lets go of all of it when the window resigns key, when ⌘ is pressed (AppKit stops delivering key-ups then), when a menu opens (menus take the key-ups), when live keys are turned off, and when the app quits. `liveSender` finds the Roblox player with `findRobloxPlayerProcess` and builds a sender with the same method as the player.
+`liveHandleKeyEvent` decides what happens to each key event the window gets. A key goes to Roblox only if it is one of the current piano's keys or Space, Command is not held, and no text field is being edited; auto-repeat is ignored. Modifiers are sent with the key that needs them, and let go when released on the keyboard. `liveMouse` does the same for the piano picture, with a glide from key to key. The global `LIVE` remembers every key sent down and the modifier state; `liveReleaseAll` lets go of all of it when the window resigns key, when ⌘ is pressed (AppKit stops delivering key-ups then), when a menu opens (menus take the key-ups), when live keys are turned off, and when the app quits. `liveSender` builds a sender with the same method as the player once it has found Roblox, from the cheapest way to the dearest: macOS reports every app that opens (`uiAppLaunched`, an `NSWorkspace` notification), the Roblox player is asked for by its bundle identifier every 1.5 s, and every running app is read (about 40 ms) only at the first lookup, when forced, or when an app opened that macOS did not describe.
 
 ## Files in the config folder
 
@@ -118,13 +119,27 @@ The window and the player share `~/Library/Application Support/Roblox MIDI Piano
 | File | Written by | Read by | Contents |
 | --- | --- | --- | --- |
 | `config.json` | the window | the window | the settings |
-| `playback_job_<id>.json` | the window | the player | the song, mapped to keys, with its id, name and language |
+| `playback_job_<id>.json` | the window | the player | the song, mapped to keys, with its id, name and language; every note packed as one short array (`packSchedule`, `unpackSchedule`), times to the microsecond |
 | `launch_playback_worker.sh` | the window | `nohup` | starts the player |
 | `playback.pid` | the window | both | the player's process id |
 | `playback_state.json` | the player (and the window when it starts or stops one) | the window | status, position, length, speed, pause, notes sent |
 | `playback_control.json` | the window | the player | the speed and pause wanted for one job id |
 | `playback.stop` | the window | the player | Stop; the player checks for it 20 times a second |
 | `playback.log` | both | you | each step, in plain words |
+
+## The uninstaller
+
+`uninstallPlan` lists what there is to remove, by kind, and `uninstallRun` removes it.
+
+| Kind | How it is found |
+| --- | --- |
+| `app` | a bundle with one of the app's identifiers (`APP_BUNDLE_IDS`: the current one, and the one versions 1.0 to 2.0 used), or whose name, letters and digits only, starts with `robloxmidipianoplayer`. Looked for at the top of Applications, ~/Applications, Downloads, Desktop and Documents (and inside a folder named like the app), and anywhere through Spotlight and Launch Services. Spotlight alone is not enough: it can miss recent copies. |
+| `zip` | an archive whose name starts the same way, in the same places and through Spotlight |
+| `source` | a folder holding `RobloxMIDIPianoPlayer.swift`, the very first version's source, and nothing but its known files |
+| `settings` | the settings folder |
+| `leftover` | the preferences file, saved window state, caches and web storage macOS keeps under the app's identifiers |
+
+The running copy is listed last. `uninstallRun` stops a song that is playing, ends the other running copies (by the script they run), moves each item to the Trash (`trashItemAtURL…`) or deletes it, deletes the preference domains, resets the Accessibility permission of both identifiers with `tccutil`, then sets `UNINSTALLED`, after which nothing writes the settings folder again. Only items of these kinds are touched: a folder named like the app keeps everything but the copies inside it, and goes too only once nothing else is left in it (a `.DS_Store` aside). With `ROBLOX_MIDI_PLAYER_UNINSTALL_ROOTS` set (folders separated by colons), only those folders and the settings folder are looked at, and nothing outside them is changed: the tests use it.
 
 ## Permissions, safety and privacy
 
@@ -154,4 +169,9 @@ Things worth knowing before changing the code:
 | A ten-note chord with Quartz | about 20 ms |
 | Spacing of notes in `tools/realtime_test.sh` | median within 1 ms of the schedule, before and after a speed change |
 | A speed change or a pause, from the click to the music | within 0.1 s |
-| The window's refresh | every 0.25 s |
+| The window, idle, live keys on, Roblox closed (`--ui-selftest … idle`) | 0.5 % of one CPU core (2.1: 5.6 %) |
+| Looking for Roblox, regular check / full scan | 0.06 ms / about 45 ms (2.1: a full scan every 1.5 s) |
+| Mapping a 12,000-note song with 3,000 tempo changes, and counting the other mode | about 10 ms (2.1: about 1 s) |
+| The job file of that song | 523 KB (2.1: 3.4 MB) |
+| Drawing the piano picture | 28 ms (2.1: 37 ms) |
+| The app / the release zip | 509 KB / 322 KB (2.1.1: 694 KB / 459 KB) |

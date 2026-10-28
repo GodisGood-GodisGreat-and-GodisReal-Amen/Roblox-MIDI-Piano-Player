@@ -10,14 +10,21 @@ jobs:
       - name: Shell and Python syntax
         run: |
           for f in build.sh app/RobloxMidiPianoPlayer tools/*.sh; do bash -n "$f"; done
-          python3 -m py_compile tools/genmidi.py
+          python3 -m py_compile tools/*.py
       - name: The app's property list
         run: plutil -lint app/Info.plist
       - name: The demo songs are what tools/genmidi.py writes
         run: |
           python3 tools/genmidi.py --demos "$RUNNER_TEMP/demo"
           for f in docs/demo/*.mid; do cmp "$f" "$RUNNER_TEMP/demo/$(basename "$f")"; done
-      - name: Engine tests
+      - name: Engine tests on the source
         run: osascript -l JavaScript tools/engine_harness.js "$PWD/src/main.js"
-      - name: The app builds
+      - name: The app builds (with the compact script)
         run: ./build.sh --zip
+      - name: Engine tests on the compact script inside the app
+        run: osascript -l JavaScript tools/engine_harness.js "$PWD/build/Roblox MIDI Piano Player.app/Contents/Resources/main.js"
+      - name: The uninstaller finds nothing on a clean machine
+        run: |
+          out="$("build/Roblox MIDI Piano Player.app/Contents/MacOS/RobloxMidiPianoPlayer" --uninstall)"
+          echo "$out"
+          echo "$out" | grep -q "Nothing was removed\|Nothing of Roblox MIDI Piano Player was found"

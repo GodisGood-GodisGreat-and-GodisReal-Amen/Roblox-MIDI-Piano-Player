@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.2.0 — 2026-10-28
+
+**Uninstaller.** **Roblox MIDI Piano Player › Uninstall Roblox MIDI Piano Player…** removes the app and everything it ever left on the Mac, so nothing is left when you want the space back: this app and every other copy of any version back to 1.0 (found by both of the app's bundle identifiers and by name, in Applications, Downloads, Desktop and Documents, and wherever Spotlight or macOS knows of one), downloaded archives of it, the folder the first version's source came in, the settings folder with its logs and old song files, the files macOS keeps for the app, and its Accessibility permission. It shows the list with sizes first, **Cancel** is the default, and everything goes to the Trash unless you tick **Delete right away**. A song that is playing is stopped and other open copies are closed first. Only those kinds of item are touched: a folder of yours that holds a copy keeps everything else. From Terminal, `--uninstall` lists, `--uninstall --yes` removes.
+
+**Lighter and faster, with every feature and the same playback.**
+- The idle window uses 0.5 % of a CPU core instead of 5.6 %. Its timer runs four times a second only while a song is armed or playing, and once a second otherwise; once the Accessibility permission is given it is checked every 10 s instead of every 2 s; and live keys find Roblox by its bundle identifier, or the moment macOS reports it opened, instead of reading every running app every 1.5 s (46 ms each time).
+- Mapping a big song (12,000 notes, 3,000 tempo changes) onto the piano, and counting what the other mode would play, takes about 10 ms instead of about 1 s, with the same results: tempo changes are looked up by halving instead of one by one, and the other mode's count comes from the analysis instead of a second full schedule.
+- The job handed to the background player is six times smaller (523 KB instead of 3.4 MB for that song), so arming is quicker.
+- The piano picture draws in 28 ms instead of 37 ms, and the armed player's check of the app in front costs a third of what it did.
+- The app is 27 % smaller (509 KB instead of 694 KB) and the download 30 % smaller (322 KB instead of 459 KB). The app carries a compact copy of the script, without comments or indentation, checked token by token against the source; `./build.sh --readable` keeps the source as it is. The icon is recompressed without loss: the same 11 sizes, every pixel identical. The documentation's screenshots are recompressed the same way, 40 % smaller, and the two window pictures now show 2.2.0.
+- A log backup that older versions left in the settings folder (`playback.log.bak`) is removed at launch, with the old job files.
+
+**Polish.** Alerts show the app's icon instead of a generic one, and the self test also pictures the uninstaller and can measure the idle window (`--ui-selftest MIDI PREFIX idle`). New tests check that the fast paths give exactly the old results, and the CI check runs the engine tests on the compact copy too.
+
 ## 2.1.1 — 2026-10-27
 
 - **Demo songs** in **File › Demo Songs**: *Ode to Joy* and *Für Elise* (Beethoven) for the classic piano, and arpeggios across all 88 keys for the extended one. A demo shows its title in the window and in the notifications.

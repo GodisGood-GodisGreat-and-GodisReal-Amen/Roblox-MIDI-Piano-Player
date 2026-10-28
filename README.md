@@ -16,6 +16,8 @@ It is a small native macOS app, in English and French, with nothing to install b
 - **Exact or best fit.** *Perfect* mapping plays every note exactly where it is written and skips what is outside the piano; *Smart best fit* may shift a song to fit more of it. Any song can also be transposed by semitones.
 - **Ready to try.** Three demo songs are built in: *Ode to Joy*, *Für Elise* and arpeggios across all 88 keys.
 - **US QWERTY and French AZERTY** keyboards, an optional free-form layout for unusual pianos, and the whole window in English or French.
+- **Light.** The whole app is about 500 KB, and while it waits it uses almost no processor time (0.5 % of one core).
+- **Uninstalls itself, completely.** **Uninstall Roblox MIDI Piano Player…** in the app menu finds this app and every older copy of any version, downloaded archives, settings, logs and its permission, shows you the list, and moves it all to the Trash, so nothing is left behind.
 
 | The status card, paused | Mode 2 with the full-range demo |
 | --- | --- |
@@ -23,7 +25,7 @@ It is a small native macOS app, in English and French, with nothing to install b
 
 ## Quick start
 
-1. Download `Roblox-MIDI-Piano-Player-2.1.1.zip` from the [latest release](https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player/releases/latest), unzip it, and move the app to **Applications**.
+1. Download `Roblox-MIDI-Piano-Player-2.2.0.zip` from the [latest release](https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player/releases/latest), unzip it, and move the app to **Applications**.
 2. Open it. The app is not signed by Apple, so the first time click **Open Anyway** in **System Settings › Privacy & Security**. Then click **Allow…** in the app and switch it on under **Accessibility**, so it can send keys.
 3. Open Roblox at a piano. In the app, choose a song (or **File › Demo Songs**), pick Mode 1 or Mode 2, click **Arm playback**, and click the Roblox window once.
 
@@ -41,14 +43,14 @@ The [startup guide](docs/getting-started.md) goes through each step, including t
 
 - [Getting started](docs/getting-started.md): requirements, installing, the macOS permissions, your first song, playing live, where things go, updating, uninstalling.
 - [User manual](docs/manual.md): every control, setting, menu and shortcut, and the key maps of both pianos.
-- [Building it yourself](docs/building.md): the build script, the four tests, the demo songs and making a release.
-- [How it works](docs/architecture.md): the window and the background player, the MIDI parser, the timing engine, live speed and live keys, the files they share.
+- [Building it yourself](docs/building.md): the build script and its compact copy of the script, the four tests, the demo songs, the icon and making a release.
+- [How it works](docs/architecture.md): the window and the background player, the MIDI parser, the timing engine, live speed and live keys, the files they share, the uninstaller, and what it all costs.
 - [Troubleshooting](docs/troubleshooting.md): what to do when something does not work.
 - [Contributing](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
 
 ## How it works, in one paragraph
 
-The whole app is one JavaScript for Automation script, [`src/main.js`](src/main.js), in an ordinary app bundle whose launcher starts it with `osascript`; the window is built with AppKit straight from JavaScript. Loading a song parses the MIDI file (every track, tempo changes, note lengths) and maps each note onto the chosen piano. Arming starts a separate background player that waits for Roblox to come to the front, then sends each chord's keys to the Roblox process with `CGEventPostToPid`. Only the key presses are on the time-critical path: key releases are budgeted into the gaps, and when a big chord runs late the rest of the song shifts by the overrun instead of rushing, so the pulse stays steady. The window and the player talk through small JSON files in `~/Library/Application Support/Roblox MIDI Piano Player/`: the player reports its state and position, and the window writes the speed and the pause, which the player picks up within a tenth of a second and applies from the note that is playing. Live keys use the same sender from the window itself, and keep track of every key they press so that nothing is ever left down in Roblox.
+The whole app is one JavaScript for Automation script, [`src/main.js`](src/main.js), in an ordinary app bundle whose launcher starts it with `osascript` (the bundle carries a compact copy, without the comments); the window is built with AppKit straight from JavaScript. Loading a song parses the MIDI file (every track, tempo changes, note lengths) and maps each note onto the chosen piano. Arming starts a separate background player that waits for Roblox to come to the front, then sends each chord's keys to the Roblox process with `CGEventPostToPid`. Only the key presses are on the time-critical path: key releases are budgeted into the gaps, and when a big chord runs late the rest of the song shifts by the overrun instead of rushing, so the pulse stays steady. The window and the player talk through small JSON files in `~/Library/Application Support/Roblox MIDI Piano Player/`: the player reports its state and position, and the window writes the speed and the pause, which the player picks up within a tenth of a second and applies from the note that is playing. Live keys use the same sender from the window itself, and keep track of every key they press so that nothing is ever left down in Roblox.
 
 ## Macs and pianos
 

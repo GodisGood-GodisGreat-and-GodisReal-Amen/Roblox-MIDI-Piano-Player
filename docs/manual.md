@@ -15,6 +15,7 @@ Everything in the window, in the order you meet it. Shortcuts are written for a 
 9. [Menus and keyboard shortcuts](#9-menus-and-keyboard-shortcuts)
 10. [Language, notifications and the log](#10-language-notifications-and-the-log)
 11. [The key maps](#11-the-key-maps)
+12. [Uninstalling](#12-uninstalling)
 
 ## 1. The window
 
@@ -134,6 +135,7 @@ Live keys work while a song plays, so you can play along. Turn them off with the
 | Menu | Command | Shortcut |
 | --- | --- | --- |
 | Roblox MIDI Piano Player | About Roblox MIDI Piano Player | |
+| | Uninstall Roblox MIDI Piano Player… ([section 12](#12-uninstalling)) | |
 | | Quit Roblox MIDI Piano Player | ⌘Q |
 | File | Open MIDI… | ⌘O |
 | | Demo Songs › Ode to Joy, Für Elise, Full-range arpeggios | |
@@ -174,3 +176,9 @@ Closing the window quits the app; a song that is playing carries on.
 | 12 highest notes, C#7 → C8 (white and black) | Ctrl + `y u i o p a s d f g h j` | Ctrl + `y u i o p q s d f g h j` |
 
 The dotted keys are chromatic: each one is the next semitone, black keys included, so no Shift is involved. The piano picture shows every label.
+
+## 12. Uninstalling
+
+**Roblox MIDI Piano Player › Uninstall Roblox MIDI Piano Player…** removes the app and everything any version of it ever put on this Mac: this copy and every other one (whatever its version, wherever Spotlight or macOS knows of it, and in Applications, Downloads, Desktop and Documents), downloaded archives of it, the first version's source folder, the settings folder with its logs and old song files, the files macOS keeps for an app, and the Accessibility permission.
+
+It lists everything with its size before doing anything. **Cancel** is the default; **Uninstall** moves it all to the Trash, or deletes it at once with **Delete right away, without the Trash** ticked. A song that is playing stops, other open copies close, and the app quits when it is done. [Getting started](getting-started.md#8-uninstalling) shows the same from Terminal.

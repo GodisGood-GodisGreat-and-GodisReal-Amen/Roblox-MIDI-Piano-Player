@@ -367,6 +367,74 @@ function run(argv) {
   var drumsOnly = parseBytes(midiBytes([drumTrack]));
   check(drumsOnly.notes.length === 3 && drumsOnly.drumNotes === 0, "a file with only channel 10 keeps its notes (" + drumsOnly.notes.length + ")");
 
+  // 22-24: the speed-ups give exactly the old results (v2.2.0).
+  var seed = 12345;
+  function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
+  // 22: the binary-search tempo lookup against the old linear scan.
+  function oldTickToSeconds(tick, tempos, division) {
+    if (tempos.length === 0) return tick * 500000.0 / 1000000.0 / division;
+    var idx = 0;
+    for (var i = 0; i < tempos.length; i++) { if (tempos[i].tick > tick) break; idx = i; }
+    var tc = tempos[idx];
+    return tc.secondsAt + (tick - tc.tick) * tc.microPerQN / 1000000.0 / division;
+  }
+  var lookups = 0, lookupMismatches = 0;
+  for (var tm = 0; tm < 40; tm++) {
+    var raw = [{ tick: 0, microPerQN: 500000 }];
+    var nTempos = Math.floor(rnd() * 300);
+    for (var tq = 0; tq < nTempos; tq++) raw.push({ tick: Math.floor(rnd() * 100000), microPerQN: 300000 + Math.floor(rnd() * 600000) });
+    var tempoMap = mergeTempoChanges(raw);
+    annotateTempoSeconds(tempoMap, 480);
+    for (var tk = 0; tk < 200; tk++) {
+      var tick = Math.floor(rnd() * 110000);
+      lookups++;
+      if (tickToSeconds(tick, tempoMap, 480) !== oldTickToSeconds(tick, tempoMap, 480)) lookupMismatches++;
+    }
+  }
+  check(lookupMismatches === 0, "tempo lookup: binary search equals the old scan (" + lookupMismatches + " of " + lookups + " differ)");
+
+  // 23: the other mode's note count, from the note counts, equals the schedule's.
+  var countMismatches = 0, countCases = 0;
+  ["classic", "extended"].forEach(function(mode) {
+    ["perfect", "smart"].forEach(function(recognition) {
+      ["us", "azerty"].forEach(function(layout) {
+        [-12, -5, 0, 7, 12].forEach(function(transpose) {
+          var notes = [];
+          for (var q = 0; q < 300; q++) notes.push({ tick: q * 60, note: 12 + Math.floor(rnd() * 105), durTicks: 60 });
+          var parsedSong = { notes: notes, tempos: [], division: 480 };
+          var c = sanitizeConfig({ keyboardProfile: layout, keyboardMode: mode, noteRecognitionMode: recognition, baseMIDINote: 30 + Math.floor(rnd() * 20) });
+          var full = uiComputeFit(parsedSong, c, mode, transpose).built.mapped;
+          var quick = uiCountPlayable(parsedSong, c, mode, transpose).built.mapped;
+          countCases++;
+          if (full !== quick) countMismatches++;
+        });
+      });
+    });
+  });
+  check(countMismatches === 0, "note count from counts equals the schedule's (" + countMismatches + " of " + countCases + " differ)");
+
+  // 24: the packed job file gives the same events back.
+  var packCfg = cfgFor("extended", "azerty");
+  var packProfile = resolveKeyboardProfile(packCfg);
+  var packNotes = [];
+  for (var pn = 0; pn < 500; pn++) packNotes.push({ tick: pn * 37, note: 21 + Math.floor(rnd() * 88), durTicks: Math.floor(rnd() * 400) });
+  var packPc = clone(packCfg); packPc.savedBaseMIDINote = 36;
+  var packTempos = [{ tick: 0, microPerQN: 500000 }, { tick: 5000, microPerQN: 431234 }];
+  var packed = buildSchedule(packNotes, packTempos, 480, packPc, packProfile).schedule;
+  var roundTrip = unpackSchedule(JSON.parse(JSON.stringify(packSchedule(packed))));
+  var packBad = roundTrip.events.length === packed.events.length ? 0 : 1;
+  for (var pe = 0; pe < packed.events.length && !packBad; pe++) {
+    var a1 = packed.events[pe], b1 = roundTrip.events[pe];
+    var fields = ["k", "keyCode", "keyShift", "keyCtrl", "keyLabel", "sourceMIDINote", "playedMIDINote", "stepIndex"];
+    for (var fi = 0; fi < fields.length; fi++) if (a1[fields[fi]] !== b1[fields[fi]]) packBad++;
+    if (Math.abs(a1.t - b1.t) > 0.0000006 || Math.abs(a1.dur - b1.dur) > 0.0000006) packBad++;
+  }
+  check(packBad === 0 && roundTrip.modifierKeyCode === packed.modifierKeyCode && roundTrip.speed === packed.speed, "packed job events come back the same (" + packBad + " differences)");
+  var objectJob = unpackSchedule(clone(packed));
+  check(objectJob.events.length === packed.events.length, "a job from an older window (events as objects) is read as is");
+  var packedSize = JSON.stringify(packSchedule(packed)).length, objectSize = JSON.stringify(packed, null, 2).length;
+  check(packedSize * 3 < objectSize, "packed job is at least 3 times smaller (" + packedSize + " vs " + objectSize + " bytes)");
+
   var out = ["Engine harness: " + (failures.length === 0 ? "ALL CHECKS PASSED" : failures.length + " FAILURE(S)")];
   for (var f = 0; f < failures.length; f++) out.push("  FAIL: " + failures[f]);
   out.push("  sweep timeline: first press t=" + (r3.rec.presses[0].t - 100).toFixed(3) + "s, last press t=" + (r3.rec.presses[87].t - 100).toFixed(3) + "s (scheduled 0.000 .. " + ((87 * 120) / 480 * 0.5).toFixed(3) + "s)");

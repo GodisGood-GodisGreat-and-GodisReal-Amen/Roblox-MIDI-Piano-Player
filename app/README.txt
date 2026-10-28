@@ -33,6 +33,12 @@ Permission
 Your settings, the playback log and the playback state are kept in
 ~/Library/Application Support/Roblox MIDI Piano Player/ ("Config folder").
 
+Uninstall
+  Roblox MIDI Piano Player > Uninstall Roblox MIDI Piano Player... lists,
+  then removes, this app, every older copy of any version, downloaded
+  archives of it, its settings and logs, and its Accessibility permission.
+  Everything goes to the Trash, unless you tick "Delete right away".
+
 The Help menu opens the user manual, the getting-started guide and the
 troubleshooting page online. Source code and updates:
 https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player

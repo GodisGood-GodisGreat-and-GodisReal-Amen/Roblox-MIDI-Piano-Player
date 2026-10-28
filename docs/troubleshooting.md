@@ -22,7 +22,7 @@
 
 **The speed buttons or Pause do nothing during a song.** They reach the player within a tenth of a second. A song armed by version 2.0 of the app (before updating) does not listen for them: stop it and arm it again.
 
-**Live keys say "Roblox is not open" while Roblox is running.** The app looks for the Roblox player every second and a half; give it a moment after Roblox starts. If it still does not find it, **Open log**: when live keys connect, the log says "Live keys: connected to …" with the app it found.
+**Live keys say "Roblox is not open" while Roblox is running.** The app connects as soon as macOS reports that Roblox has opened, and otherwise looks for it every second and a half; give it a moment. If it still does not find it, **Open log**: when live keys connect, the log says "Live keys: connected to …" with the app it found.
 
 **Live keys are connected, but pressing keys in the window plays nothing.** Make sure the window is in front and no text field is being edited (a blinking cursor in **Delay after click** or **Note of key 1**): click the piano picture to give the keys back to the piano. Only the piano's keys and Space are passed on.
 
@@ -37,5 +37,13 @@
 **The Terminal live log opens every time a song is armed.** Untick **Also open the live log (Terminal)** in the settings. **Open log** shows the same log whenever you want it.
 
 **The window does not appear, or the app shows old-style dialogs instead.** If the window cannot be built, the app falls back to its older dialogs so that it stays usable. **Open log** (or `playback.log` in the config folder) says why. Please [report it](https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player/issues), with that line.
+
+**The uninstaller did not list a copy you know is there.** It looks in both **Applications** folders, **Downloads**, **Desktop** and **Documents**, and anywhere else Spotlight or macOS knows of a copy. A copy on a drive Spotlight does not search, or one put there a moment ago, can be missed: drag it to the Trash yourself.
+
+**The uninstaller says it "could not remove" something.** That item is on a locked or read-only drive, or belongs to another user of the Mac (a copy another account put in **Applications**, say). Drag it to the Trash in Finder, which asks for your password when it is needed.
+
+**Something went to the Trash that you wanted to keep.** The uninstaller only takes the app, archives named after it, its settings and the files macOS keeps for it. Unless you ticked **Delete right away**, everything is still in the Trash: drag it back where it was, which the list showed for each item.
+
+**After uninstalling and installing again, the app asks to send keys again.** The uninstaller removes its Accessibility permission too, so a new copy starts clean: click **Allow…** once more.
 
 **Starting over.** Quit the app and delete `config.json` from the config folder (`~/Library/Application Support/Roblox MIDI Piano Player/`). The app starts with its default settings next time.
