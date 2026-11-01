@@ -23,7 +23,7 @@ var app = Application.currentApplication();
 app.includeStandardAdditions = true;
 
 var APP_NAME = "Roblox MIDI Piano Player";
-var APP_VERSION = "2.2.0";
+var APP_VERSION = "2.3.0";
 var APP_REPO_URL = "https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player";
 var SUPPORT_DIR_NAME = "Roblox MIDI Piano Player";
 var WAIT_FOR_ROBLOX_PROMPT_SECONDS = 30;
@@ -37,13 +37,21 @@ var STALE_JOB_SECONDS = 3600;          // leftover job files older than this are
 
 // --- Live speed and pause (v2.1.0) ------------------------------------------
 // While a song plays, the window writes playback_control.json ({ jobId, speed,
-// paused }). The worker reads it a few times a second and re-anchors its
-// timeline on the spot, so the music slows down, speeds up or pauses from the
-// note that is playing now — no jump, no catch-up burst.
+// paused, transpose }). The worker reads it a few times a second and
+// re-anchors its timeline on the spot, so the music slows down, speeds up or
+// pauses from the note that is playing now — no jump, no catch-up burst.
 var CONTROL_POLL_SECONDS = 0.1;       // how often the worker looks at the control file
 var SPEED_MIN = 0.25;
 var SPEED_MAX = 2.0;
 var SPEED_STEP = 0.05;
+
+// --- Live transposition (v2.3.0) ---------------------------------------------
+// "Transpose this song" also works while the song plays. The job carries the
+// piano's whole key map and the notes that fell outside the piano, so the
+// worker can map the notes still ahead onto other keys from the note that is
+// playing: notes may come into range as well as leave it.
+var TRANSPOSE_MIN = -12;
+var TRANSPOSE_MAX = 12;
 
 // --- Playback timing tuning (v1.7.3) ---------------------------------------
 // Sending one key to Roblox through the Accessibility API is slow (~10-15ms
@@ -730,7 +738,7 @@ function armBackgroundPlayback(schedule, midiPath, supportDir, options) {
   appendPlaybackLog(supportDir, "Launcher executable path: " + execPath);
   appendPlaybackLog(supportDir, "Worker main.js path: " + mainScriptPath);
   appendPlaybackLog(supportDir, "Frontmost while arming: " + describeApplicationInfo(frontmostApplicationInfo()));
-  appendPlaybackLog(supportDir, "Schedule summary: events=" + ((schedule && schedule.events) ? schedule.events.length : 0) + ", startDelay=" + formatNumber(schedule.startDelay || 0, 3) + "s, speed=" + formatNumber(schedule.speed || 1, 3) + "x, runBase=" + noteLabel(schedule.baseMIDINote || 0) + ", pianoBase=" + noteLabel(schedule.savedBaseMIDINote || schedule.baseMIDINote || 0) + ", keyboardProfile=" + String(schedule.keyboardProfileLabel || schedule.keyboardProfile || "Legacy Custom") + ", noteRecognition=" + noteRecognitionModeLabel(schedule.noteRecognitionMode || "perfect") + ".");
+  appendPlaybackLog(supportDir, "Schedule summary: events=" + ((schedule && schedule.events) ? schedule.events.length : 0) + ", startDelay=" + formatNumber(schedule.startDelay || 0, 3) + "s, speed=" + formatNumber(schedule.speed || 1, 3) + "x, transpose=" + describeSemitoneShift(schedule.transpose || 0) + ", runBase=" + noteLabel(schedule.baseMIDINote || 0) + ", pianoBase=" + noteLabel(schedule.savedBaseMIDINote || schedule.baseMIDINote || 0) + ", keyboardProfile=" + String(schedule.keyboardProfileLabel || schedule.keyboardProfile || "Legacy Custom") + ", noteRecognition=" + noteRecognitionModeLabel(schedule.noteRecognitionMode || "perfect") + ".");
   appendPlaybackLog(supportDir, "Schedule preview: " + schedulePreviewText(schedule, 8));
 
   var jobId = String(new Date().getTime()) + "_" + String(Math.floor(Math.random() * 1000000));
@@ -748,9 +756,10 @@ function armBackgroundPlayback(schedule, midiPath, supportDir, options) {
     schedule: packSchedule(schedule)
   };
   writeJSONFile(jobPath, job);
-  // The control file starts at the song's own speed. The window rewrites it
-  // when the speed is changed or the song is paused.
-  writePlaybackControl(supportDir, { jobId: jobId, speed: schedule.speed || 1, paused: false, updatedAt: launchedAt });
+  // The control file starts at the song's own speed and transposition. The
+  // window rewrites it when the speed or the transposition is changed or the
+  // song is paused.
+  writePlaybackControl(supportDir, { jobId: jobId, speed: schedule.speed || 1, paused: false, transpose: schedule.transpose || 0, updatedAt: launchedAt });
   appendPlaybackLog(supportDir, "Wrote playback job " + jobId + ".");
 
   var launcherPath = ensureWorkerLaunchScript(supportDir, execPath, mainScriptPath, jobPath, jobId);
@@ -1211,14 +1220,16 @@ function currentMainScriptPath() {
 // The job file carries every note of the song. Written as objects with
 // indentation, a 12,000-note song came to 3.4 MB; packed as one short array
 // per note it is a fraction of that, written and read faster. Times are kept
-// to the microsecond. unpackSchedule also accepts the object form, which
-// older versions of the window write.
+// to the microsecond. The notes outside the piano (skippedEvents) need only
+// their time, length and pitch. unpackSchedule also accepts the object form,
+// which older versions of the window write.
 var PACKED_EVENT_FIELDS = "t,dur,keyCode,flags,k,keyLabel,sourceMIDINote,playedMIDINote,stepIndex";
+var PACKED_SKIPPED_FIELDS = "t,dur,sourceMIDINote";
 
 function packSchedule(schedule) {
   var packed = {};
   for (var key in schedule) {
-    if (schedule.hasOwnProperty(key) && key !== "events") packed[key] = schedule[key];
+    if (schedule.hasOwnProperty(key) && key !== "events" && key !== "skippedEvents") packed[key] = schedule[key];
   }
   var events = schedule.events || [];
   var rows = new Array(events.length);
@@ -1237,6 +1248,16 @@ function packSchedule(schedule) {
     ];
   }
   packed.packedEvents = { fields: PACKED_EVENT_FIELDS, rows: rows };
+  var skipped = schedule.skippedEvents || [];
+  var skippedRows = new Array(skipped.length);
+  for (var s = 0; s < skipped.length; s++) {
+    skippedRows[s] = [
+      Math.round(Number(skipped[s].t || 0) * 1e6) / 1e6,
+      Math.round(Number(skipped[s].dur || 0) * 1e6) / 1e6,
+      skipped[s].sourceMIDINote
+    ];
+  }
+  packed.packedSkipped = { fields: PACKED_SKIPPED_FIELDS, rows: skippedRows };
   return packed;
 }
 
@@ -1253,11 +1274,17 @@ function unpackSchedule(schedule) {
     if (r[8] != null) ev.stepIndex = r[8];
     events[i] = ev;
   }
+  var skippedRows = schedule.packedSkipped ? (schedule.packedSkipped.rows || []) : [];
+  var skipped = new Array(skippedRows.length);
+  for (var s = 0; s < skippedRows.length; s++) {
+    skipped[s] = { t: skippedRows[s][0], dur: skippedRows[s][1], sourceMIDINote: skippedRows[s][2] };
+  }
   var out = {};
   for (var key in schedule) {
-    if (schedule.hasOwnProperty(key) && key !== "packedEvents") out[key] = schedule[key];
+    if (schedule.hasOwnProperty(key) && key !== "packedEvents" && key !== "packedSkipped") out[key] = schedule[key];
   }
   out.events = events;
+  out.skippedEvents = skipped;
   return out;
 }
 
@@ -1628,12 +1655,15 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
     throw new Error("The selected Roblox process is no longer running.");
   }
 
+  // The notes to play, in time order, each with its key. A live
+  // transposition replaces the list with the notes still ahead (moveSong).
   var events = schedule.events || [];
   var sender = createDirectKeySender(targetPid, supportDir, schedule.keySendMethod);
   var ctrl = createKeyController(sender, schedule.modifierKeyCode);
   var targetInfo = applicationInfoForPid(targetPid);
   var trace = createPlaybackTraceWriter(supportDir);
-  // Live speed / pause requests from the window (see CONTROL_POLL_SECONDS).
+  // Live speed / pause / transposition requests from the window (see
+  // CONTROL_POLL_SECONDS).
   var live = createLiveControl(supportDir, job, schedule);
   var timeline = createPlaybackTimeline();
   var songLength = scheduleLengthSeconds(schedule);
@@ -1642,11 +1672,21 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
   appendPlaybackLog(supportDir, "Target application info: " + describeApplicationInfo(targetInfo));
   trace.write("Detailed playback trace starting. senderMode=" + sender.mode + ", target=" + describeApplicationInfo(targetInfo) + ".");
 
+  // Where the loop is: `i` is the first note of the next chord in `events`.
+  // `progress` counts the notes pressed so far and `totalNotes` what the song
+  // will have pressed by its end, at the keys in force.
+  var i = 0;
+  var progress = 0;
+  var totalNotes = events.length;
+  var lastChordTime = -1;   // schedule time of the last chord pressed
+  var playedEnd = 0;        // where the notes pressed so far end
+  var moved = 0;            // semitones the song now sits from where it was armed
+  var allNotes = null;      // every note, played or not, made when the song first moves
+
   // Everything the window shows comes from here. Positions are song seconds
   // at 1x, so the clock reads the same whatever the speed. The worker's own
   // pid is written too: with it missing, the window would rewrite the file
   // (getPlaybackStatus) and could undo a state saved in between.
-  var progress = 0;
   var workerPid = currentProcessId();
   function saveState(now, position, extra) {
     var state = {
@@ -1660,11 +1700,12 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
       targetApp: targetInfo,
       senderMode: sender.mode,
       progressEvents: progress,
-      totalEvents: events.length,
+      totalEvents: totalNotes,
       positionSeconds: Math.max(0, Math.min(songLength, position)) * live.baseSpeed,
       durationSeconds: songLength * live.baseSpeed,
       speed: live.speed,
       paused: live.paused,
+      transpose: live.baseTranspose + moved,
       createdAt: job.createdAt || now,
       updatedAt: now
     };
@@ -1703,29 +1744,66 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
     saveState(resumedAt, position);
   }
 
-  // A new speed (or a pause) takes effect from the current position: the
-  // timeline is re-anchored on "now", so nothing jumps and nothing rushes.
+  // The window moved the song to other keys (live transposition): the notes
+  // still ahead are mapped again from the whole song, so notes that were
+  // outside the piano can come in and others drop out. "Ahead" starts at the
+  // current position, or at the next chord when the player is running late
+  // (that chord was due anyway), and never inside the chord just pressed.
+  // Keys already down ring on until their own release. Returns true when
+  // the notes changed, so the loop starts again at the first of them.
+  var warnedNoKeyMap = false;
+  function moveSong(position) {
+    var target = live.transpose - live.baseTranspose;
+    if (target === moved) return false;
+    if (!schedule.keyMap || !schedule.keyMap.keys) {
+      // A job from an older window, without the key map.
+      if (!warnedNoKeyMap) appendPlaybackLog(supportDir, "This song cannot be transposed while it plays; arm it again to transpose it.");
+      warnedNoKeyMap = true;
+      return false;
+    }
+    if (!allNotes) allNotes = mergeScheduleNotes(schedule);
+    var from = i < events.length ? Math.min(position, Number(events[i].t || 0)) : position;
+    var first = firstNoteIndexFrom(allNotes, from, lastChordTime >= 0 ? lastChordTime + CHORD_EPSILON_SECONDS : -1);
+    events = transposedEvents(allNotes, first, schedule.keyMap, target, schedule.instrumentLow);
+    i = 0;
+    moved = target;
+    totalNotes = progress + events.length;
+    songLength = Math.max(playedEnd, scheduleLengthSeconds({ events: events }));
+    appendPlaybackLog(supportDir, "Transposed to " + describeSemitoneShift(live.transpose) + " at " + formatNumber(position * live.baseSpeed, 2) + "s: " + events.length + " of the " + (allNotes.length - first) + " notes ahead fit the piano.");
+    return true;
+  }
+
+  // A new speed, pause or transposition takes effect from the current
+  // position: the timeline is re-anchored on "now", so nothing jumps and
+  // nothing rushes. Returns true when the song moved to other keys.
   function applyLiveChange() {
     var now = nowSeconds();
     var position = timeline.positionAt(now);
+    var changed = false;
     if (live.paused) {
-      holdPause(position);
-      return;
+      holdPause(position);   // saves the state itself, paused and resumed
+    } else if (Math.abs(live.rate() - timeline.rate) > 1e-9) {
+      timeline.restart(now, position, live.rate());
+      appendPlaybackLog(supportDir, "Speed changed to " + formatNumber(live.speed, 2) + "x at " + formatNumber(position * live.baseSpeed, 2) + "s.");
+      changed = true;
     }
-    timeline.restart(now, position, live.rate());
-    appendPlaybackLog(supportDir, "Speed changed to " + formatNumber(live.speed, 2) + "x at " + formatNumber(position * live.baseSpeed, 2) + "s.");
-    saveState(now, position);
+    var songMoved = moveSong(position);
+    if (changed || songMoved) saveState(nowSeconds(), position);
+    return songMoved;
   }
 
   // Anchor the schedule to the moment the loop actually begins so the very
-  // first note is not already late by setup time.
+  // first note is not already late by setup time. A transposition chosen
+  // while the song was armed applies from the first note.
   live.poll(nowSeconds(), true);
+  moveSong(0);
   var start = nowSeconds();
   timeline.restart(start, 0, live.rate());
   saveState(start, 0);
   if (live.paused) {
     // Paused while still armed: wait here, before the first note.
     holdPause(0);
+    if (moveSong(0)) saveState(nowSeconds(), 0);
     start = nowSeconds();
   }
 
@@ -1734,7 +1812,6 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
   var maxSlip = 0;
 
   try {
-    var i = 0;
     while (i < events.length) {
       // Check the stop signal every chord, independently of the wait below.
       // When playback is running behind (a very dense song), waitForOnset
@@ -1743,9 +1820,11 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
       if (stopRequested(supportDir)) {
         throw canceledError();
       }
-      // The same goes for the speed and pause controls (rate-limited inside).
-      if (live.poll(nowSeconds(), false)) {
-        applyLiveChange();
+      // The same goes for the speed, pause and transposition controls
+      // (rate-limited inside). A song moved to other keys starts the loop
+      // again at the first note ahead.
+      if (live.poll(nowSeconds(), false) && applyLiveChange()) {
+        continue;
       }
 
       var ev = events[i];
@@ -1809,13 +1888,22 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
       // Wait for this chord's instant. The idle time is spent on key RELEASES
       // (budgeted so they can never delay the note-on), which keeps the actual
       // keystrokes the only thing on the timeline's critical path. A speed
-      // change or a pause during the wait moves the instant, so wait again.
+      // change or a pause during the wait moves the instant, so wait again;
+      // a transposition changes the notes themselves, so prepare them again.
       var onsetWall = timeline.wallTimeFor(chordTime);
+      var songMoved = false;
       while (waitForOnset(onsetWall, ctrl, supportDir, upcomingCodes, live)) {
-        applyLiveChange();
+        if (applyLiveChange()) {
+          songMoved = true;
+          break;
+        }
         onsetWall = timeline.wallTimeFor(chordTime);
       }
+      if (songMoved) {
+        continue;
+      }
 
+      var eventNumber = progress + 1;   // for the log: the chord's first note, counted from the start
       var beforeSend = nowSeconds();
       var drift = beforeSend - onsetWall;
       if (drift > maxDrift) maxDrift = drift;
@@ -1833,7 +1921,7 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
       } catch (sendError) {
         appendPlaybackLog(
           supportDir,
-          "Direct key send failed at event " + (i + 1) + "/" + events.length +
+          "Direct key send failed at event " + eventNumber + "/" + totalNotes +
             (chordSize > 1 ? (" (chord of " + chordSize + ")") : "") +
             (ev.sourceMIDINote != null ? (" note=" + noteName(ev.sourceMIDINote)) : "") +
             " key=" + formatPreviewKeyLabel(specs.length ? specs[0].label : (ev.k || "?")) +
@@ -1841,7 +1929,11 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
         );
         throw sendError;
       }
-      progress = chordEnd + 1;
+      progress += chordSize;
+      lastChordTime = chordTime;
+      for (var pe = i; pe <= chordEnd; pe++) {
+        playedEnd = Math.max(playedEnd, Number(events[pe].t || 0) + Math.max(0, Number(events[pe].dur || 0)));
+      }
 
       // Pressing a fat chord takes real time. If that pushed us past the next
       // note's slot, shift the WHOLE remaining timeline by the overrun instead
@@ -1863,12 +1955,13 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
       var shouldTrace = (i < 32 || chordEnd === events.length - 1 || (((chordEnd + 1) % 128) === 0));
       if (shouldTrace) {
         trace.write(
-          "Event " + (i + 1) + "/" + events.length +
+          "Event " + eventNumber + "/" + totalNotes +
           (chordSize > 1 ? (" (chord of " + chordSize + ")") : "") +
           ": scheduled=" + formatNumber(chordTime, 4) + "s" +
           ", actual=" + formatNumber(beforeSend - start, 4) + "s" +
           ", drift=" + formatNumber(drift, 4) + "s" +
           (live.speed !== live.baseSpeed ? (", speed=" + formatNumber(live.speed, 2) + "x") : "") +
+          (moved !== 0 ? (", transposed=" + (moved > 0 ? "+" : "") + moved) : "") +
           (ev.sourceMIDINote != null ? (", source=" + noteName(ev.sourceMIDINote)) : "") +
           (ev.playedMIDINote != null ? (", played=" + noteName(ev.playedMIDINote)) : "") +
           ", key=" + formatPreviewKeyLabel(spec0 && spec0.label != null ? spec0.label : (ev.k || "?")) +
@@ -1884,7 +1977,7 @@ function performPlaybackToPid(schedule, targetPid, supportDir, job) {
       var now = nowSeconds();
       if (i === 0 || chordEnd === events.length - 1 || now - lastStateRefresh >= 1) {
         saveState(now, timeline.positionAt(now), {
-          lastEventIndex: chordEnd + 1,
+          lastEventIndex: progress,
           lastEventKey: spec0 && spec0.label != null ? String(spec0.label) : String(ev.k || ""),
           lastEventMIDINote: ev.sourceMIDINote != null ? ev.sourceMIDINote : null,
           lastEventPlayedMIDINote: ev.playedMIDINote != null ? ev.playedMIDINote : null,
@@ -1958,23 +2051,29 @@ function createPlaybackTimeline() {
   };
 }
 
-// The speed and pause requested by the window for this job. `speed` is the
-// absolute speed (1 = the MIDI's own tempo); the schedule was built at
-// `baseSpeed`, so the timeline runs at speed / baseSpeed.
+// The speed, pause and transposition requested by the window for this job.
+// `speed` is the absolute speed (1 = the MIDI's own tempo); the schedule was
+// built at `baseSpeed`, so the timeline runs at speed / baseSpeed. Likewise
+// `transpose` is the song's whole transposition, and the schedule's keys
+// already include `baseTranspose` of it.
 function createLiveControl(supportDir, job, schedule) {
   var baseSpeed = schedule && Number(schedule.speed) > 0 ? Number(schedule.speed) : 1;
+  var baseTranspose = schedule ? clamp(Math.round(Number(schedule.transpose) || 0), TRANSPOSE_MIN, TRANSPOSE_MAX) : 0;
   var jobId = String((job && job.jobId) || "");
   return {
     baseSpeed: baseSpeed,
     speed: baseSpeed,
     paused: false,
+    baseTranspose: baseTranspose,
+    transpose: baseTranspose,
     lastPoll: -1,
     rate: function() {
       return this.speed / this.baseSpeed;
     },
     // Reads the control file, at most every CONTROL_POLL_SECONDS unless
-    // forced. Returns true when the speed or the pause state changed. A file
-    // left by another job is ignored.
+    // forced. Returns true when the speed, the pause state or the
+    // transposition changed. A file left by another job is ignored, and so
+    // is a missing transposition (a window that does not know it).
     poll: function(now, force) {
       if (!force && this.lastPoll >= 0 && now - this.lastPoll < CONTROL_POLL_SECONDS) return false;
       this.lastPoll = now;
@@ -1984,12 +2083,61 @@ function createLiveControl(supportDir, job, schedule) {
       if (!isFinite(speed) || speed <= 0) speed = this.speed;
       speed = clamp(speed, SPEED_MIN, SPEED_MAX);
       var paused = !!control.paused;
-      var changed = Math.abs(speed - this.speed) > 0.0001 || paused !== this.paused;
+      var transpose = control.transpose == null ? NaN : Math.round(Number(control.transpose));
+      transpose = isFinite(transpose) ? clamp(transpose, TRANSPOSE_MIN, TRANSPOSE_MAX) : this.transpose;
+      var changed = Math.abs(speed - this.speed) > 0.0001 || paused !== this.paused || transpose !== this.transpose;
       this.speed = speed;
       this.paused = paused;
+      this.transpose = transpose;
       return changed;
     }
   };
+}
+
+// Every note of a schedule, played or outside the piano, in time order (then
+// lowest first, like the MIDI file's notes): what a song is mapped again from
+// when it moves to other keys while it plays.
+function mergeScheduleNotes(schedule) {
+  var a = schedule.events || [];
+  var b = schedule.skippedEvents || [];
+  var out = new Array(a.length + b.length);
+  var ia = 0, ib = 0, n = 0;
+  while (ia < a.length || ib < b.length) {
+    var takeA = ib >= b.length || (ia < a.length && (
+      Number(a[ia].t || 0) < Number(b[ib].t || 0) ||
+      (Number(a[ia].t || 0) === Number(b[ib].t || 0) && Number(a[ia].sourceMIDINote) <= Number(b[ib].sourceMIDINote))));
+    out[n++] = takeA ? a[ia++] : b[ib++];
+  }
+  return out;
+}
+
+// The index of the first note at or after `from` and strictly after `after`
+// (both schedule seconds), found by halving: the notes are in time order.
+function firstNoteIndexFrom(notes, from, after) {
+  var lo = 0, hi = notes.length;
+  while (lo < hi) {
+    var mid = (lo + hi) >> 1;
+    var t = Number(notes[mid].t || 0);
+    if (t >= from && t > after) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+// The events for notes[first…] with the song moved `shift` semitones from the
+// keys it was armed at: the notes that land on a key of `keyMap` (see
+// buildSchedule), each made as buildSchedule makes them.
+function transposedEvents(notes, first, keyMap, shift, playedFirstNote) {
+  var keys = keyMap.keys || [];
+  var firstNote = Number(keyMap.firstNote) - shift;   // the note that lands on the lowest key now
+  var out = [];
+  for (var n = first; n < notes.length; n++) {
+    var note = notes[n];
+    var idx = Number(note.sourceMIDINote) - firstNote;
+    var key = idx >= 0 && idx < keys.length ? keys[idx] : null;
+    if (key) out.push(keyedEvent(note.t, note.dur, note.sourceMIDINote, idx, key, playedFirstNote));
+  }
+  return out;
 }
 
 // Where the song ends, in schedule seconds: the last note's end.
@@ -3675,9 +3823,13 @@ function buildSchedule(notes, tempos, division, cfg, profile) {
   var runBase0 = cfg.baseMIDINote - anchor;
   var savedBase0 = savedBase - anchor;
   var modifierKeyCode = extendedModifierKeyCode(cfg.extendedModifier);
+  var keys = scheduleKeys(steps);
   var schedule = {
     startDelay: cfg.startDelaySeconds,
     speed: speed,
+    // The semitones the window moved this song by ("Transpose this song"),
+    // already part of baseMIDINote; the live transposition starts from it.
+    transpose: Math.round(Number(cfg.transpose) || 0),
     baseMIDINote: cfg.baseMIDINote,
     savedBaseMIDINote: savedBase,
     noteRecognitionMode: normalizeNoteRecognitionMode(cfg.noteRecognitionMode),
@@ -3688,7 +3840,14 @@ function buildSchedule(notes, tempos, division, cfg, profile) {
     modifierKeyCode: modifierKeyCode,
     instrumentLow: savedBase0,
     instrumentHigh: savedBase0 + steps.length - 1,
-    events: []
+    // Every key of the piano and the note that lands on the first one, so the
+    // player can move the song to other keys while it plays.
+    keyMap: { firstNote: runBase0, keys: keys },
+    events: [],
+    // The notes outside the piano: never played as they are, but kept with
+    // their times, so that transposing the song while it plays can bring
+    // them in.
+    skippedEvents: []
   };
   var mapped = 0;
   var skippedLow = 0;
@@ -3698,19 +3857,6 @@ function buildSchedule(notes, tempos, division, cfg, profile) {
   for (var i = 0; i < notes.length; i++) {
     var n = notes[i];
     var idx = n.note - runBase0;
-    if (idx < 0) {
-      skippedLow++;
-      continue;
-    }
-    if (idx >= steps.length) {
-      skippedHigh++;
-      continue;
-    }
-    var step = steps[idx];
-    if (!step || !isFiniteNumber(step.code)) {
-      skippedHigh++;
-      continue;
-    }
     var startSeconds = tickToSeconds(n.tick, tempos, division);
     var seconds = startSeconds / speed;
     if (seconds < 0) seconds = 0;
@@ -3722,18 +3868,14 @@ function buildSchedule(notes, tempos, division, cfg, profile) {
       durSeconds = (tickToSeconds(n.tick + n.durTicks, tempos, division) - startSeconds) / speed;
       if (!(durSeconds > 0)) durSeconds = 0;
     }
-    schedule.events.push({
-      t: seconds,
-      dur: durSeconds,
-      k: step.label,
-      keyCode: step.code,
-      keyShift: !!step.shift,
-      keyCtrl: !!step.ctrl,
-      keyLabel: stepDisplayLabel(step),
-      sourceMIDINote: n.note,
-      playedMIDINote: savedBase0 + idx,
-      stepIndex: idx
-    });
+    var key = idx >= 0 && idx < keys.length ? keys[idx] : null;
+    if (!key) {
+      if (idx < 0) skippedLow++;
+      else skippedHigh++;
+      schedule.skippedEvents.push({ t: seconds, dur: durSeconds, sourceMIDINote: n.note });
+      continue;
+    }
+    schedule.events.push(keyedEvent(seconds, durSeconds, n.note, idx, key, savedBase0));
     mapped++;
     if (seconds > maxT) maxT = seconds;
   }
@@ -3745,6 +3887,37 @@ function buildSchedule(notes, tempos, division, cfg, profile) {
     skippedLow: skippedLow,
     skippedHigh: skippedHigh,
     duration: maxT
+  };
+}
+
+// The piano's keys as the player needs them, from the lowest: the key code,
+// Shift and Ctrl, and the labels for the log. A key a legacy custom layout
+// cannot send is null.
+function scheduleKeys(steps) {
+  var keys = new Array(steps.length);
+  for (var i = 0; i < steps.length; i++) {
+    var step = steps[i];
+    keys[i] = step && isFiniteNumber(step.code)
+      ? { code: step.code, shift: !!step.shift, ctrl: !!step.ctrl, k: step.label, keyLabel: stepDisplayLabel(step) }
+      : null;
+  }
+  return keys;
+}
+
+// The event of a note that lands on key `idx` (one of scheduleKeys); the
+// player makes the same ones when it moves a song to other keys.
+function keyedEvent(t, dur, sourceNote, idx, key, playedFirstNote) {
+  return {
+    t: t,
+    dur: dur,
+    k: key.k,
+    keyCode: key.code,
+    keyShift: key.shift,
+    keyCtrl: key.ctrl,
+    keyLabel: key.keyLabel,
+    sourceMIDINote: sourceNote,
+    playedMIDINote: playedFirstNote + idx,
+    stepIndex: idx
   };
 }
 
@@ -4618,7 +4791,8 @@ var UI_TAG = {
   modifier: 8, speed: 9, delay: 10, base: 11, resetBase: 12, liveLog: 13, arm: 14, stop: 15,
   openLog: 16, openFolder: 17, about: 18, pause: 19, speedButtons: 20, slower: 21, faster: 22,
   normalSpeed: 23, liveKeys: 24, access: 25, website: 26, helpManual: 27, helpStart: 28,
-  helpTrouble: 29, helpIssue: 30, uninstall: 31, demoBase: 100
+  helpTrouble: 29, helpIssue: 30, uninstall: 31, transposeUp: 32, transposeDown: 33,
+  noTranspose: 34, demoBase: 100
 };
 
 // The demo songs bundled in Contents/Resources/demo (build.sh copies them
@@ -4655,6 +4829,8 @@ var UI_STRINGS = {
     transposeLabel: "Transpose this song:",
     transposeNone: "0 · none",
     transposeItem: "{sign}{n} semitones",
+    transposeItemOne: "{sign}1 semitone",
+    transposeHelp: "Moves this song up or down by semitones, without changing your settings. While it plays, the change is heard from the next note (⌘↑ / ⌘↓).",
     noSong: "No song loaded yet.",
     noSongInfo: "Pick a MIDI file to see how it fits on the piano — or try one from File › Demo Songs.",
     songInfo: "{notes} notes · {span} · about {duration} at {speed}× · starts {delay} s after your click",
@@ -4710,7 +4886,7 @@ var UI_STRINGS = {
     baseInfo: "MIDI {n}",
     liveLog: "Also open the live log (Terminal)",
     arm: "Arm playback",
-    armHelp: "Then click the Roblox piano window once. While it plays you can pause, slow down or speed up from here — playback keeps going even if you close this window.",
+    armHelp: "Then click the Roblox piano window once. While it plays you can pause it, change its speed or transpose it from here — playback keeps going even if you close this window.",
     stop: "Stop",
     pause: "Pause",
     resume: "Resume",
@@ -4728,7 +4904,7 @@ var UI_STRINGS = {
     statusDelay: "Roblox detected — starting in a moment.",
     statusDelayDetail: "“{song}”",
     statusPlaying: "Playing “{song}”",
-    statusPlayingDetail: "{pos} / {dur} · {speed}× · {done} of {total} notes · via {sender}",
+    statusPlayingDetail: "{pos} / {dur} · {speed}×{transpose} · {done} of {total} notes · via {sender}",
     statusPaused: "Paused — “{song}”",
     statusPausedDetail: "{pos} / {dur} · press Resume to carry on from here",
     statusNeedsAccess: "macOS has not allowed this app to send keys yet",
@@ -4771,6 +4947,9 @@ var UI_STRINGS = {
     menuFaster: "Faster",
     menuSlower: "Slower",
     menuNormalSpeed: "Normal Speed",
+    menuTransposeUp: "Transpose Up",
+    menuTransposeDown: "Transpose Down",
+    menuNoTranspose: "No Transposition",
     menuLiveKeys: "Live Keys",
     menuDemos: "Demo Songs",
     menuHelp: "Help",
@@ -4815,7 +4994,7 @@ var UI_STRINGS = {
       "Mode 2 is the full 88-key piano (A0–C8) found in pianos such as Talent Show: the 15 lowest and 12 highest notes are the dotted keys, played with Ctrl held down.",
       "",
       "Live keys: while this window is in front, the piano keys you press — or click on the piano picture — are pressed in Roblox too.",
-      "While a song plays, − and + change the speed on the fly and Pause holds it where it is.",
+      "While a song plays, − and + change the speed on the fly, Transpose this song moves it up or down, and Pause holds it where it is.",
       "",
       "Perfect mapping keeps every note exactly where it is written; notes outside the piano are skipped, never moved. Smart best fit may transpose to fit more of the song.",
       "",
@@ -4841,6 +5020,8 @@ var UI_STRINGS = {
     transposeLabel: "Transposer ce morceau :",
     transposeNone: "0 · aucune",
     transposeItem: "{sign}{n} demi-tons",
+    transposeItemOne: "{sign}1 demi-ton",
+    transposeHelp: "Monte ou descend ce morceau par demi-tons, sans changer tes réglages. Pendant la lecture, le changement s'entend dès la note suivante (⌘↑ / ⌘↓).",
     noSong: "Aucun morceau chargé pour l'instant.",
     noSongInfo: "Choisis un fichier MIDI pour voir comment il se place sur le piano — ou essaie Fichier › Morceaux de démo.",
     songInfo: "{notes} notes · {span} · environ {duration} à {speed}× · démarre {delay} s après ton clic",
@@ -4896,7 +5077,7 @@ var UI_STRINGS = {
     baseInfo: "MIDI {n}",
     liveLog: "Aussi le journal en direct (Terminal)",
     arm: "Armer la lecture",
-    armHelp: "Puis clique une fois sur la fenêtre du piano Roblox. Pendant la lecture, tu peux mettre en pause, ralentir ou accélérer d'ici — la lecture continue même si tu fermes cette fenêtre.",
+    armHelp: "Puis clique une fois sur la fenêtre du piano Roblox. Pendant la lecture, tu peux mettre en pause, changer la vitesse ou transposer d'ici — la lecture continue même si tu fermes cette fenêtre.",
     stop: "Arrêter",
     pause: "Pause",
     resume: "Reprendre",
@@ -4914,7 +5095,7 @@ var UI_STRINGS = {
     statusDelay: "Roblox détecté — ça démarre dans un instant.",
     statusDelayDetail: "« {song} »",
     statusPlaying: "Lecture de « {song} »",
-    statusPlayingDetail: "{pos} / {dur} · {speed}× · {done} notes sur {total} · via {sender}",
+    statusPlayingDetail: "{pos} / {dur} · {speed}×{transpose} · {done} notes sur {total} · via {sender}",
     statusPaused: "En pause — « {song} »",
     statusPausedDetail: "{pos} / {dur} · appuie sur Reprendre pour continuer d'ici",
     statusNeedsAccess: "macOS n'autorise pas encore cette app à envoyer des touches",
@@ -4957,6 +5138,9 @@ var UI_STRINGS = {
     menuFaster: "Plus vite",
     menuSlower: "Moins vite",
     menuNormalSpeed: "Vitesse normale",
+    menuTransposeUp: "Monter d'un demi-ton",
+    menuTransposeDown: "Descendre d'un demi-ton",
+    menuNoTranspose: "Sans transposition",
     menuLiveKeys: "Touches en direct",
     menuDemos: "Morceaux de démo",
     menuHelp: "Aide",
@@ -5001,7 +5185,7 @@ var UI_STRINGS = {
       "Le Mode 2 est le piano complet à 88 touches (A0–C8) de pianos comme Talent Show : les 15 notes les plus graves et les 12 plus aiguës sont les touches à point, jouées avec Ctrl maintenu.",
       "",
       "Touches en direct : quand cette fenêtre est devant, les touches du piano que tu appuies — ou que tu cliques sur l'image du piano — sont aussi appuyées dans Roblox.",
-      "Pendant la lecture, − et + changent la vitesse en direct et Pause arrête le morceau là où il en est.",
+      "Pendant la lecture, − et + changent la vitesse en direct, Transposer ce morceau le monte ou le descend, et Pause arrête le morceau là où il en est.",
       "",
       "La correspondance parfaite garde chaque note exactement où elle est écrite ; les notes hors du piano sont ignorées, jamais déplacées. Le meilleur ajustement peut transposer pour faire tenir plus de notes.",
       "",
@@ -5516,6 +5700,11 @@ function uiBuildMenu() {
   playbackMenu.addItem(uiMenuItem(T("menuSlower"), 'uiAction:', "-", UI_TAG.slower));
   playbackMenu.addItem(uiMenuItem(T("menuNormalSpeed"), 'uiAction:', "0", UI_TAG.normalSpeed));
   playbackMenu.addItem($.NSMenuItem.separatorItem);
+  // ⌘↑ and ⌘↓: the arrows are where they are on every keyboard layout.
+  playbackMenu.addItem(uiMenuItem(T("menuTransposeUp"), 'uiAction:', String.fromCharCode(0xF700), UI_TAG.transposeUp));
+  playbackMenu.addItem(uiMenuItem(T("menuTransposeDown"), 'uiAction:', String.fromCharCode(0xF701), UI_TAG.transposeDown));
+  playbackMenu.addItem(uiMenuItem(T("menuNoTranspose"), 'uiAction:', "", UI_TAG.noTranspose));
+  playbackMenu.addItem($.NSMenuItem.separatorItem);
   UI.menuLiveKeys = uiMenuItem(T("menuLiveKeys"), 'uiAction:', "l", UI_TAG.liveKeys);
   UI.menuLiveKeys.setState(UI.cfg.liveKeys ? 1 : 0);
   playbackMenu.addItem(UI.menuLiveKeys);
@@ -5860,10 +6049,9 @@ function uiApplyStrings() {
   w.dropHint.setStringValue($(T("dropHint")));
   w.transposeLabel.setStringValue($(T("transposeLabel")));
   var transposeTitles = [];
-  for (var t = -12; t <= 12; t++) {
-    transposeTitles.push(t === 0 ? T("transposeNone") : T("transposeItem", { sign: t > 0 ? "+" : "−", n: Math.abs(t) }));
-  }
-  uiSetPopupItems(w.transpose, transposeTitles, UI.transpose + 12);
+  for (var t = TRANSPOSE_MIN; t <= TRANSPOSE_MAX; t++) transposeTitles.push(uiTransposeTitle(t));
+  uiSetPopupItems(w.transpose, transposeTitles, UI.transpose - TRANSPOSE_MIN);
+  w.transpose.setToolTip($(T("transposeHelp")));
   w.sectionPiano.setStringValue($(T("sectionPiano")));
   w.mode.setLabelForSegment($(T("mode1")), 0);
   w.mode.setLabelForSegment($(T("mode2")), 1);
@@ -5943,8 +6131,10 @@ function uiLoadSong(path, displayName, demoIndex) {
   }
   if (parsed.division <= 0) throw new Error(T("errMidiTiming"));
   if (parsed.notes.length === 0) throw new Error(T("errMidiEmpty"));
-  UI.transpose = 0;
-  uiSetPopupItems(UI.w.transpose, uiPopupTitles(UI.w.transpose), 12);
+  // A new song starts untransposed, unless it is the song playing right now:
+  // then the window shows the transposition it plays at.
+  UI.transpose = uiPlayingTranspose(path);
+  uiSetPopupItems(UI.w.transpose, uiPopupTitles(UI.w.transpose), UI.transpose - TRANSPOSE_MIN);
   UI.song = { path: path, name: displayName ? String(displayName) : basename(path), parsed: parsed, demoIndex: demoIndex };
   uiRefreshSong();
   try { appendPlaybackLog(UI.supportDir, "Window: loaded " + basename(path) + " (" + parsed.notes.length + " notes)."); } catch (_) {}
@@ -5957,6 +6147,34 @@ function uiPopupTitles(popup) {
     for (var i = 0; i < n; i++) out.push(String(unwrapMaybe(popup.itemTitleAtIndex(i))));
   } catch (_) {}
   return out;
+}
+
+// "0 · none", "+1 semitone", "−5 semitones".
+function uiTransposeTitle(semitones) {
+  var n = Math.abs(semitones);
+  if (n === 0) return T("transposeNone");
+  return T(n === 1 ? "transposeItemOne" : "transposeItem", { sign: semitones > 0 ? "+" : "−", n: n });
+}
+
+// Whether the loaded song is the one the background player has (armed,
+// playing or paused): only then does its transposition reach the player.
+function uiSongIsPlaying() {
+  var pb = UI.playback;
+  return !!(UI.song && pb && pb.active && pb.state && String(pb.state.midiPath || "") === UI.song.path);
+}
+
+// The transposition the player uses when `path` is the song it has, else 0.
+// The control file says what the window last asked for; the player's state
+// what it applied.
+function uiPlayingTranspose(path) {
+  var pb = getPlaybackStatus(UI.supportDir);
+  UI.playback = pb;
+  var st = pb.state || {};
+  if (!pb.active || String(st.midiPath || "") !== String(path)) return 0;
+  var control = readPlaybackControl(UI.supportDir);
+  var value = control && String(control.jobId || "") === String(st.jobId || "") && control.transpose != null ? control.transpose : st.transpose;
+  value = Math.round(Number(value));
+  return isFinite(value) ? clamp(value, TRANSPOSE_MIN, TRANSPOSE_MAX) : 0;
 }
 
 // Effective config for the piano currently selected. In Mode 2 the note of
@@ -5975,6 +6193,7 @@ function uiComputeFit(parsed, cfg, mode, transpose) {
   var runBase = analysis.detectedBase - Math.round(Number(transpose) || 0);
   var playbackCfg = clone(effective);
   playbackCfg.baseMIDINote = runBase;
+  playbackCfg.transpose = Math.round(Number(transpose) || 0);
   playbackCfg.savedBaseMIDINote = analysis.savedBase;
   playbackCfg.noteRecognitionMode = analysis.noteRecognitionMode;
   playbackCfg.keyboardProfile = profile.id;
@@ -6764,14 +6983,19 @@ function uiRefreshPlayback() {
     position += Math.max(0, nowSeconds() - Number(st.updatedAt)) * speed;
   }
   position = clamp(position, 0, Math.max(0, duration));
+  // The transposition the player applies, shown only when there is one.
+  var transpose = clamp(Math.round(Number(st.transpose) || 0), TRANSPOSE_MIN, TRANSPOSE_MAX);
   var trustBlocked = status === "idle" && UI.trusted === false;
-  var key = [status, song, done, total, paused, Math.floor(position), speed.toFixed(2), trustBlocked, uiEffectiveLanguage()].join("|");
+  var key = [status, song, done, total, paused, Math.floor(position), speed.toFixed(2), transpose, trustBlocked, uiEffectiveLanguage()].join("|");
   if (key === UI.statusKey) return;
   UI.statusKey = key;
 
   var w = UI.w;
   var text, detail, dot;
-  var clockVars = { pos: formatClock(position), dur: formatClock(duration), speed: speed.toFixed(2), done: done, total: total, sender: sender, song: song };
+  var clockVars = {
+    pos: formatClock(position), dur: formatClock(duration), speed: speed.toFixed(2), done: done, total: total, sender: sender, song: song,
+    transpose: transpose !== 0 ? " · " + uiTransposeTitle(transpose) : ""
+  };
   if (status === "launching") { text = T("statusLaunching"); detail = T("statusLaunchingDetail"); dot = $.NSColor.systemOrangeColor; }
   else if (status === "waiting") { text = T("statusWaiting"); detail = T("statusWaitingDetail", { song: song }); dot = $.NSColor.systemOrangeColor; }
   else if (status === "delay") { text = T("statusDelay"); detail = T("statusDelayDetail", { song: song }); dot = $.NSColor.systemGreenColor; }
@@ -6905,6 +7129,9 @@ function uiDispatchAction(sender) {
     else if (tag === UI_TAG.slower) uiSetSpeed(UI.cfg.speed - SPEED_STEP);
     else if (tag === UI_TAG.faster) uiSetSpeed(UI.cfg.speed + SPEED_STEP);
     else if (tag === UI_TAG.normalSpeed) uiSetSpeed(1);
+    else if (tag === UI_TAG.transposeUp) uiSetTranspose(UI.transpose + 1);
+    else if (tag === UI_TAG.transposeDown) uiSetTranspose(UI.transpose - 1);
+    else if (tag === UI_TAG.noTranspose) uiSetTranspose(0);
     else if (tag === UI_TAG.liveKeys) uiOnLiveKeys(sender);
     else if (tag === UI_TAG.access) uiOnAccess();
     else if (tag === UI_TAG.helpManual) uiOpenURL(DOCS_URL + "manual.md");
@@ -7021,8 +7248,22 @@ function uiOnChooseMidi() {
 }
 
 function uiOnTranspose() {
-  UI.transpose = clamp(Number(UI.w.transpose.indexOfSelectedItem) - 12, -12, 12);
+  uiSetTranspose(Number(UI.w.transpose.indexOfSelectedItem) + TRANSPOSE_MIN);
+}
+
+// One place for every transposition change (the pop-up, the Playback menu):
+// the loaded song is mapped again and, when it is the song playing, the
+// player moves it to the new keys from the note it is at.
+function uiSetTranspose(value) {
+  if (!UI.song) return;
+  UI.transpose = clamp(Math.round(Number(value) || 0), TRANSPOSE_MIN, TRANSPOSE_MAX);
+  UI.w.transpose.selectItemAtIndex(UI.transpose - TRANSPOSE_MIN);
   uiRefreshSong();
+  UI.playback = getPlaybackStatus(UI.supportDir);
+  if (uiSongIsPlaying()) {
+    uiPushLiveControl();
+    UI.statusKey = "";
+  }
 }
 
 function uiOnMode() {
@@ -7128,17 +7369,22 @@ function uiOnPause() {
   uiRefreshPlayback();
 }
 
-// Tells the playing song about the window's speed and pause (the worker polls
-// the file, see CONTROL_POLL_SECONDS).
+// Tells the playing song about the window's speed, pause and transposition
+// (the worker polls the file, see CONTROL_POLL_SECONDS). The transposition
+// belongs to one song: the loaded one's when it is the song playing,
+// otherwise whatever the player was last asked for.
 function uiPushLiveControl() {
   var pb = UI.playback;
   if (!pb || !pb.active || !pb.state || !pb.state.jobId) return;
-  writePlaybackControl(UI.supportDir, {
-    jobId: String(pb.state.jobId),
-    speed: UI.cfg.speed,
-    paused: !!UI.paused,
-    updatedAt: nowSeconds()
-  });
+  var jobId = String(pb.state.jobId);
+  var control = { jobId: jobId, speed: UI.cfg.speed, paused: !!UI.paused, updatedAt: nowSeconds() };
+  if (uiSongIsPlaying()) {
+    control.transpose = UI.transpose;
+  } else {
+    var previous = readPlaybackControl(UI.supportDir);
+    if (previous && String(previous.jobId || "") === jobId && previous.transpose != null) control.transpose = previous.transpose;
+  }
+  writePlaybackControl(UI.supportDir, control);
 }
 
 function uiOnLiveKeys(sender) {
@@ -7498,12 +7744,13 @@ function uiRunSelfTest() {
       songEvents = UI.song.fit.built.schedule.events.length;
     }
     var fakeState = {
-      jobId: fakeJob, pid: currentProcessId(), songName: UI.song ? UI.song.name : "song.mid", status: "playing", senderMode: "cg",
-      progressEvents: Math.round(songEvents * 0.4), totalEvents: songEvents, positionSeconds: songSeconds * 0.4,
-      durationSeconds: songSeconds, speed: UI.cfg.speed, paused: false, createdAt: nowSeconds(), updatedAt: nowSeconds()
+      jobId: fakeJob, pid: currentProcessId(), songName: UI.song ? UI.song.name : "song.mid", midiPath: UI.song ? UI.song.path : "",
+      status: "playing", senderMode: "cg", progressEvents: Math.round(songEvents * 0.4), totalEvents: songEvents,
+      positionSeconds: songSeconds * 0.4, durationSeconds: songSeconds, speed: UI.cfg.speed, paused: false,
+      createdAt: nowSeconds(), updatedAt: nowSeconds()
     };
     savePlaybackState(UI.supportDir, fakeState);
-    writePlaybackControl(UI.supportDir, { jobId: fakeJob, speed: UI.cfg.speed, paused: false, updatedAt: nowSeconds() });
+    writePlaybackControl(UI.supportDir, { jobId: fakeJob, speed: UI.cfg.speed, paused: false, transpose: 0, updatedAt: nowSeconds() });
     LIVE.testSender = { mode: "cg", postKeyCode: function() {}, close: function() {} };
     step("12_playing", function() {
       UI.cfg.startDelaySeconds = 0.5;
@@ -7521,9 +7768,42 @@ function uiRunSelfTest() {
       UI.window.sendEvent(keyEvent(10, 31, 0, "o", false));
     });
     liveReleaseAll();
-    LIVE.testSender = null;
     report.playingDetail = String(unwrapMaybe(UI.w.statusDetail.stringValue));
     report.pauseEnabled = !!UI.w.pause.isEnabled;
+
+    // Live transposition: ⌘↑ twice on the song that plays reaches the player
+    // through the control file, and the card shows what the player applies.
+    // The same chord is held for the picture (docs/images/window-en.png).
+    var playbackMenu = UI.nsApp.mainMenu.itemAtIndex(3).submenu;
+    if (UI.song) {
+      step("12_transposed", function() {
+        uiDispatchAction(playbackMenu.itemWithTag(UI_TAG.transposeUp));
+        uiDispatchAction(playbackMenu.itemWithTag(UI_TAG.transposeUp));
+        fakeState.transpose = readPlaybackControl(UI.supportDir).transpose;
+        fakeState.updatedAt = nowSeconds();
+        savePlaybackState(UI.supportDir, fakeState);
+        UI.statusKey = "";
+        uiRefreshPlayback();
+        UI.window.sendEvent(keyEvent(10, 17, 0, "t", false));
+        UI.window.sendEvent(keyEvent(10, 32, 0, "u", false));
+        UI.window.sendEvent(keyEvent(10, 31, 0, "o", false));
+      });
+      liveReleaseAll();
+      report.transposedControl = readPlaybackControl(UI.supportDir);
+      report.transposedDetail = String(unwrapMaybe(UI.w.statusDetail.stringValue));
+      report.transposedPopup = String(unwrapMaybe(UI.w.transpose.titleOfSelectedItem));
+      // A song that is not the one playing keeps its transposition to itself.
+      fakeState.midiPath = "/elsewhere/another-song.mid";
+      savePlaybackState(UI.supportDir, fakeState);
+      uiSetTranspose(-3);
+      report.otherSongControl = readPlaybackControl(UI.supportDir);
+      // Opening the playing song again shows the transposition it plays at.
+      fakeState.midiPath = UI.song.path;
+      savePlaybackState(UI.supportDir, fakeState);
+      uiLoadSong(UI.song.path, UI.song.name, UI.song.demoIndex);
+      report.reopenedTranspose = UI.transpose;
+    }
+    LIVE.testSender = null;
     step("13_paused", function() {
       uiOnPause();
       fakeState.paused = true;

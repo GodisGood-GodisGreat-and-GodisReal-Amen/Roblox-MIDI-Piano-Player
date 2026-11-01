@@ -24,7 +24,7 @@ function run(argv) {
   while (now() < end) {
     var event = app.nextEventMatchingMaskUntilDateInModeDequeue(mask, $.NSDate.dateWithTimeIntervalSinceNow(0.02), $.NSDefaultRunLoopMode, true);
     if (event && !event.isNil()) {
-      lines.push(JSON.stringify({ wall: now(), type: Number(event.type), code: Number(event.keyCode) }));
+      lines.push(JSON.stringify({ wall: now(), type: Number(event.type), code: Number(event.keyCode), flags: Number(event.modifierFlags) }));
     }
     // A short grace period after "done" collects the last key-ups.
     if (!doneAt && fm.fileExistsAtPath($(out + ".done"))) doneAt = now();

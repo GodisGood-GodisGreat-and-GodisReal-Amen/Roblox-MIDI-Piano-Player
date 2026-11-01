@@ -52,7 +52,7 @@ The player is a process of its own because osascript has one thread: the window'
 
 A **keyboard profile** (`makeMaxKeyboardProfile`) lists every key of a Roblox piano in semitone order. Each step knows its macOS key code, whether it needs Shift (the classic black keys) or Ctrl (the dotted keys of the 88-key piano), its label, its zone (`low`, `main`, `high`) and whether it is black. The classic piano has 61 steps; the extended one adds 15 below and 12 above, and `anchorIndex` (0 or 15) says where key `1` is. US QWERTY and French AZERTY profiles have the same key codes, the physical positions, and differ only in their labels. A legacy custom layout is a string of characters, one per semitone, turned into key codes by `layoutCharSpec`.
 
-The saved **Note of key 1** (C2 = 36 by default) is the note of key `1` in both modes. `analyzeNotes` and `detectBaseNote` choose where the song sits on the piano: *Perfect* keeps that base; *Smart best fit* tries octave shifts first and arbitrary semitone shifts only if none fits, keeping the base when a shift would gain almost nothing. `buildSchedule` then turns every note into an event: its time and length in seconds at the chosen speed, its key code and modifiers, its label, and the note it came from. Notes outside the piano are counted, not moved.
+The saved **Note of key 1** (C2 = 36 by default) is the note of key `1` in both modes. `analyzeNotes` and `detectBaseNote` choose where the song sits on the piano: *Perfect* keeps that base; *Smart best fit* tries octave shifts first and arbitrary semitone shifts only if none fits, keeping the base when a shift would gain almost nothing. `buildSchedule` then turns every note into an event: its time and length in seconds at the chosen speed, its key code and modifiers, its label, and the note it came from. Notes outside the piano are counted, not moved, and kept aside with their times (`skippedEvents`). The schedule also carries the piano's key map (`keyMap`: every key with its code and modifiers, and the note that lands on the first one) and the song's transposition, so the player can move the song to other keys by itself ([live transposition](#live-transposition)).
 
 ## The background player
 
@@ -82,9 +82,15 @@ When a chord makes the next note late by more than 10 ms, the rest of the song s
 
 ### Live speed and pause
 
-The window writes `playback_control.json` (`{ jobId, speed, paused }`) whenever the speed or the pause changes; the player reads it at most ten times a second and ignores a file meant for another song (`createLiveControl`). Time runs through `createPlaybackTimeline`: a song position (in seconds of the schedule) maps to a wall-clock time through an anchor pair, a rate (the requested speed divided by the speed the song was armed at) and the slip. A speed change re-anchors the timeline at the current position, so the music carries on from the note it was at. A pause lets go of every key, waits (still watching the stop file), and re-anchors at the same position on resume. Key lengths are worked out when a chord is pressed, at the speed in force.
+The window writes `playback_control.json` (`{ jobId, speed, paused, transpose }`) whenever the speed, the pause or the transposition changes; the player reads it at most ten times a second and ignores a file meant for another song (`createLiveControl`). Time runs through `createPlaybackTimeline`: a song position (in seconds of the schedule) maps to a wall-clock time through an anchor pair, a rate (the requested speed divided by the speed the song was armed at) and the slip. A speed change re-anchors the timeline at the current position, so the music carries on from the note it was at. A pause lets go of every key, waits (still watching the stop file), and re-anchors at the same position on resume. Key lengths are worked out when a chord is pressed, at the speed in force.
 
-The player reports its position and the song's length in seconds of the song at 1×, its speed and whether it is paused. It writes the state about once a second, with its own process id, so the window never needs to rewrite the file. Between two reports the window moves the clock on by itself.
+The player reports its position and the song's length in seconds of the song at 1×, its speed, its transposition and whether it is paused. It writes the state about once a second, with its own process id, so the window never needs to rewrite the file. Between two reports the window moves the clock on by itself.
+
+### Live transposition
+
+`transpose` in the control file is the song's whole transposition, in semitones; the schedule's keys already include the part it was armed with (`schedule.transpose`). When it changes, `moveSong` merges the played notes and the skipped ones back into the whole song once (`mergeScheduleNotes`), finds the first note still ahead (`firstNoteIndexFrom`) and maps the notes from there onto the key map again (`transposedEvents`), which replaces the list the loop walks. Notes outside the piano can come in this way, and notes the new key pushes outside drop out. "Ahead" starts at the current position, or at the next chord when the player is running late (that chord was due anyway), and never inside the chord just pressed, so nothing is struck twice. The change takes effect between notes: one noticed while waiting for a chord prepares that chord again. Keys already down ring on until their own release; one struck again at the new keys is let go first, as always. The timeline is not touched, so the tempo and any slip carry on as they were. A change made while the song is armed applies from the first note, and one made during a pause when it resumes.
+
+The transposition belongs to one song. The window sends it only when the song loaded in the window is the one the player has (same file); otherwise it passes on the value the player already has. Opening the playing song again reads that value back into the pop-up. A job written by an older window has no key map: the player says so in the log and leaves the song where it is.
 
 ### Sending keys
 
@@ -119,11 +125,11 @@ The window and the player share `~/Library/Application Support/Roblox MIDI Piano
 | File | Written by | Read by | Contents |
 | --- | --- | --- | --- |
 | `config.json` | the window | the window | the settings |
-| `playback_job_<id>.json` | the window | the player | the song, mapped to keys, with its id, name and language; every note packed as one short array (`packSchedule`, `unpackSchedule`), times to the microsecond |
+| `playback_job_<id>.json` | the window | the player | the song, mapped to keys, with its id, name and language; every note packed as one short array (`packSchedule`, `unpackSchedule`), times to the microsecond; the notes outside the piano (time, length, pitch) and the piano's key map, for live transposition |
 | `launch_playback_worker.sh` | the window | `nohup` | starts the player |
 | `playback.pid` | the window | both | the player's process id |
-| `playback_state.json` | the player (and the window when it starts or stops one) | the window | status, position, length, speed, pause, notes sent |
-| `playback_control.json` | the window | the player | the speed and pause wanted for one job id |
+| `playback_state.json` | the player (and the window when it starts or stops one) | the window | status, position, length, speed, transposition, pause, notes sent |
+| `playback_control.json` | the window | the player | the speed, pause and transposition wanted for one job id |
 | `playback.stop` | the window | the player | Stop; the player checks for it 20 times a second |
 | `playback.log` | both | you | each step, in plain words |
 
@@ -167,11 +173,13 @@ Things worth knowing before changing the code:
 | One key event with Quartz | about 2 ms |
 | One key event with Accessibility | 12–17 ms |
 | A ten-note chord with Quartz | about 20 ms |
-| Spacing of notes in `tools/realtime_test.sh` | median within 1 ms of the schedule, before and after a speed change |
-| A speed change or a pause, from the click to the music | within 0.1 s |
+| Spacing of notes in `tools/realtime_test.sh` | median within 1 ms of the schedule, before and after a speed change and a transposition |
+| A speed change, a pause or a transposition, from the click to the music | within 0.1 s |
+| Moving a 12,000-note song to other keys while it plays | about 1 ms (merging its notes, once: under 1 ms) |
 | The window, idle, live keys on, Roblox closed (`--ui-selftest … idle`) | 0.5 % of one CPU core (2.1: 5.6 %) |
 | Looking for Roblox, regular check / full scan | 0.06 ms / about 45 ms (2.1: a full scan every 1.5 s) |
 | Mapping a 12,000-note song with 3,000 tempo changes, and counting the other mode | about 10 ms (2.1: about 1 s) |
 | The job file of that song | 523 KB (2.1: 3.4 MB) |
+| What live transposition adds to a job file | 6 KB for the key map, and about 25 bytes per note outside the piano |
 | Drawing the piano picture | 28 ms (2.1: 37 ms) |
-| The app / the release zip | 509 KB / 322 KB (2.1.1: 694 KB / 459 KB) |
+| The app / the release zip | 518 KB / 325 KB (2.1.1: 694 KB / 459 KB) |

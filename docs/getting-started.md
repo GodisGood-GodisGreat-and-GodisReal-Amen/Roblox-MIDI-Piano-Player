@@ -17,7 +17,7 @@ Nothing else needs installing. To build the app from its source instead of downl
 
 ### Download
 
-1. Download `Roblox-MIDI-Piano-Player-2.2.0.zip` from the [latest release](https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player/releases/latest).
+1. Download `Roblox-MIDI-Piano-Player-2.3.0.zip` from the [latest release](https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player/releases/latest).
 2. Double-click it to unzip it, and move **Roblox MIDI Piano Player** into your **Applications** folder.
 
 ### Build it yourself
@@ -63,7 +63,7 @@ The window notices within a couple of seconds and the status reads **Ready.**; i
 4. **Click Arm playback.** The status says *Armed — click the Roblox piano window once*.
 5. **Click the Roblox window once.** Half a second later, the song starts.
 
-While it plays, the status card shows the position, the length and the speed. Click **−** or **+** to slow it down or speed it up, **Pause** to hold it, and **Stop** to end it. You can switch to other apps: the song keeps playing in Roblox.
+While it plays, the status card shows the position, the length and the speed. Click **−** or **+** to slow it down or speed it up, change **Transpose this song** (or press **⌘↑** / **⌘↓**) to move it up or down, **Pause** to hold it, and **Stop** to end it. You can switch to other apps: the song keeps playing in Roblox.
 
 ![The status card while a song is paused](images/status-paused.png)
 
@@ -81,8 +81,8 @@ Everything the app keeps is in `~/Library/Application Support/Roblox MIDI Piano 
 | --- | --- |
 | `config.json` | your settings, saved as you change them, and where the window was |
 | `playback.log` | what the last song did, step by step; **Open log** opens it |
-| `playback_state.json` | what the background player is doing now: waiting, playing, its position and speed |
-| `playback_control.json` | the speed and pause the window asks for while a song plays |
+| `playback_state.json` | what the background player is doing now: waiting, playing, its position, speed and transposition |
+| `playback_control.json` | the speed, transposition and pause the window asks for while a song plays |
 | `playback.pid`, `playback.stop` | the background player's process number, and its stop signal |
 | `playback_job_….json` | the song being played, mapped to keys; removed when it ends |
 | `launch_playback_worker.sh`, `open_live_log.command` | small scripts the app writes to start the player and the live log |

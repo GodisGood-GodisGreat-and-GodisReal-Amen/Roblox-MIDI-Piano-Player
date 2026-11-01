@@ -1,19 +1,19 @@
 # Roblox MIDI Piano Player
 
-Play any MIDI file on a Roblox piano. Pick a song, see on a picture of the piano which keys it uses, click **Arm playback**, then click the Roblox piano once: the app presses the right keys at the right time, chords and all. While it plays you can slow it down, speed it up or pause it, and you can play the Roblox piano yourself from the app's window, with your keyboard or your mouse.
+Play any MIDI file on a Roblox piano. Pick a song, see on a picture of the piano which keys it uses, click **Arm playback**, then click the Roblox piano once: the app presses the right keys at the right time, chords and all. While it plays you can slow it down, speed it up, transpose it or pause it, and you can play the Roblox piano yourself from the app's window, with your keyboard or your mouse.
 
 It is a small native macOS app, in English and French, with nothing to install besides itself. Everything runs on your Mac: nothing is uploaded anywhere.
 
-![The app playing "Ode to Joy" at 1.30×, with a C major chord held on the live keys](docs/images/window-en.png)
+![The app playing "Ode to Joy" at 1.30×, transposed up 2 semitones, with a C major chord held on the live keys](docs/images/window-en.png)
 
 ## What it does
 
 - **Plays MIDI files on the Roblox piano.** Each note becomes the key the Roblox piano expects: white keys `1` … `m`, black keys with Shift. Notes are held for their real length, chords land together, tempo changes are followed, and drum tracks are left out.
 - **Both Roblox pianos.** *Mode 1* is the classic 61-key piano (C2–C7). *Mode 2* is the full 88-key piano (A0–C8) of games such as *Talent Show*, whose lowest and highest notes are the dotted keys played with Ctrl. The picture of the piano shows which keys a song uses, and the app tells you how many notes the other mode would add or lose.
-- **Live speed and pause.** While a song plays, **−** and **+** change the speed on the spot, from 0.25× to 2×, and **Pause** holds the song exactly where it is. The music never jumps or rushes to catch up.
+- **Live speed, transposition and pause.** While a song plays, **−** and **+** change the speed on the spot, from 0.25× to 2×, **Transpose this song** (or **⌘↑** / **⌘↓**) moves it up or down by semitones from the next note, and **Pause** holds the song exactly where it is. The music never jumps or rushes to catch up, and notes that were outside the piano come in when a new key brings them within it.
 - **Live keys.** While the app's window is in front, the piano keys you press on your keyboard are pressed in Roblox too, and so are the keys you click on the piano picture. Pressed keys turn blue, and no key can stay stuck down.
 - **Keeps playing in the background.** Keys go straight to the Roblox process, so you can switch to other apps while a song plays.
-- **Exact or best fit.** *Perfect* mapping plays every note exactly where it is written and skips what is outside the piano; *Smart best fit* may shift a song to fit more of it. Any song can also be transposed by semitones.
+- **Exact or best fit.** *Perfect* mapping plays every note exactly where it is written and skips what is outside the piano; *Smart best fit* may shift a song to fit more of it. Any song can also be transposed by semitones, before or while it plays.
 - **Ready to try.** Three demo songs are built in: *Ode to Joy*, *Für Elise* and arpeggios across all 88 keys.
 - **US QWERTY and French AZERTY** keyboards, an optional free-form layout for unusual pianos, and the whole window in English or French.
 - **Light.** The whole app is about 500 KB, and while it waits it uses almost no processor time (0.5 % of one core).
@@ -25,7 +25,7 @@ It is a small native macOS app, in English and French, with nothing to install b
 
 ## Quick start
 
-1. Download `Roblox-MIDI-Piano-Player-2.2.0.zip` from the [latest release](https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player/releases/latest), unzip it, and move the app to **Applications**.
+1. Download `Roblox-MIDI-Piano-Player-2.3.0.zip` from the [latest release](https://github.com/GodisGood-GodisGreat-and-GodisReal-Amen/Roblox-MIDI-Piano-Player/releases/latest), unzip it, and move the app to **Applications**.
 2. Open it. The app is not signed by Apple, so the first time click **Open Anyway** in **System Settings › Privacy & Security**. Then click **Allow…** in the app and switch it on under **Accessibility**, so it can send keys.
 3. Open Roblox at a piano. In the app, choose a song (or **File › Demo Songs**), pick Mode 1 or Mode 2, click **Arm playback**, and click the Roblox window once.
 
@@ -50,7 +50,7 @@ The [startup guide](docs/getting-started.md) goes through each step, including t
 
 ## How it works, in one paragraph
 
-The whole app is one JavaScript for Automation script, [`src/main.js`](src/main.js), in an ordinary app bundle whose launcher starts it with `osascript` (the bundle carries a compact copy, without the comments); the window is built with AppKit straight from JavaScript. Loading a song parses the MIDI file (every track, tempo changes, note lengths) and maps each note onto the chosen piano. Arming starts a separate background player that waits for Roblox to come to the front, then sends each chord's keys to the Roblox process with `CGEventPostToPid`. Only the key presses are on the time-critical path: key releases are budgeted into the gaps, and when a big chord runs late the rest of the song shifts by the overrun instead of rushing, so the pulse stays steady. The window and the player talk through small JSON files in `~/Library/Application Support/Roblox MIDI Piano Player/`: the player reports its state and position, and the window writes the speed and the pause, which the player picks up within a tenth of a second and applies from the note that is playing. Live keys use the same sender from the window itself, and keep track of every key they press so that nothing is ever left down in Roblox.
+The whole app is one JavaScript for Automation script, [`src/main.js`](src/main.js), in an ordinary app bundle whose launcher starts it with `osascript` (the bundle carries a compact copy, without the comments); the window is built with AppKit straight from JavaScript. Loading a song parses the MIDI file (every track, tempo changes, note lengths) and maps each note onto the chosen piano. Arming starts a separate background player that waits for Roblox to come to the front, then sends each chord's keys to the Roblox process with `CGEventPostToPid`. Only the key presses are on the time-critical path: key releases are budgeted into the gaps, and when a big chord runs late the rest of the song shifts by the overrun instead of rushing, so the pulse stays steady. The window and the player talk through small JSON files in `~/Library/Application Support/Roblox MIDI Piano Player/`: the player reports its state and position, and the window writes the speed, the transposition and the pause, which the player picks up within a tenth of a second and applies from the note that is playing. For a transposition it maps the notes still ahead onto the piano again, from the whole song it was handed, notes outside the piano included. Live keys use the same sender from the window itself, and keep track of every key they press so that nothing is ever left down in Roblox.
 
 ## Macs and pianos
 
@@ -62,7 +62,7 @@ The app works entirely on your Mac and never connects to the internet. It sends 
 
 ## En français
 
-L'app est entièrement traduite : choisis **Français** en haut à droite de la fenêtre. Elle joue n'importe quel fichier MIDI sur un piano Roblox (61 ou 88 touches) ; pendant la lecture, **−** et **+** changent la vitesse en direct et **Pause** arrête le morceau là où il en est. Avec les **touches en direct**, ce que tu appuies sur ton clavier ou que tu cliques sur l'image du piano est aussi joué dans Roblox. Pour l'installer, suis le [démarrage rapide](#quick-start) ci-dessus.
+L'app est entièrement traduite : choisis **Français** en haut à droite de la fenêtre. Elle joue n'importe quel fichier MIDI sur un piano Roblox (61 ou 88 touches) ; pendant la lecture, **−** et **+** changent la vitesse en direct, **Transposer ce morceau** (ou **⌘↑** / **⌘↓**) le monte ou le descend dès la note suivante, et **Pause** arrête le morceau là où il en est. Avec les **touches en direct**, ce que tu appuies sur ton clavier ou que tu cliques sur l'image du piano est aussi joué dans Roblox. Pour l'installer, suis le [démarrage rapide](#quick-start) ci-dessus.
 
 ![La fenêtre en français, morceau en pause](docs/images/window-fr.png)
 

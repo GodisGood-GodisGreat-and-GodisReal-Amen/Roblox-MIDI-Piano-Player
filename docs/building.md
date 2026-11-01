@@ -44,21 +44,21 @@ Everything is in `src/main.js`, in this order: settings and tuning constants; `r
 
 Four tests, from the quickest to the most complete. The first two need nothing but the Mac.
 
-**The engine harness** runs the real mapping and timing code on a virtual clock, with the operating system replaced by a recorder. In a second it checks the 61- and 88-key maps on both layouts, every key's modifiers across a sweep of all 88 notes, chords that mix the zones, Option instead of Ctrl, the analysis of both modes, the settings, live speed changes (×2, ×0.5, during a rest), pause and resume, hold lengths at a new speed, the final notes, the drum filter on real MIDI files, and that a control file meant for another song is ignored. It also checks that the fast paths give exactly the old results: the tempo lookup against a plain scan on 8,000 random cases, the other mode's note count against a full schedule, and the packed job file against the notes it came from. It exits with an error when a check fails. Run it on the compact copy too, which is what people get:
+**The engine harness** runs the real mapping and timing code on a virtual clock, with the operating system replaced by a recorder. In a second it checks the 61- and 88-key maps on both layouts, every key's modifiers across a sweep of all 88 notes, chords that mix the zones, Option instead of Ctrl, the analysis of both modes, the settings, live speed changes (×2, ×0.5, during a rest), pause and resume, hold lengths at a new speed, the final notes, live transposition (up and down, notes coming into the piano and leaving it, during a rest, while paused, while armed, a job without a key map, a job read back from its file), the drum filter on real MIDI files, and that a control file meant for another song is ignored. It also checks that the fast paths give exactly the old results: the tempo lookup against a plain scan on 8,000 random cases, the other mode's note count against a full schedule, and the packed job file against the notes it came from. It exits with an error when a check fails. Run it on the compact copy too, which is what people get:
 
 ```bash
 osascript -l JavaScript tools/engine_harness.js "$PWD/src/main.js"
 osascript -l JavaScript tools/engine_harness.js "$PWD/build/Roblox MIDI Piano Player.app/Contents/Resources/main.js"
 ```
 
-**The real-time test** plays 40 notes with the real engine, the real clock and real Quartz key events into a small test app (`tools/key_receiver.js`) instead of Roblox. Another process doubles the speed at 2.1 s, pauses at 4.1 s and resumes at 5.6 s through the control file, as the window does. It then checks that every key pressed was let go, that notes were 0.25 s apart at 1× and 0.125 s at 2× (median within 5 ms, every note within 40 ms), and that the pause was clean. It takes about ten seconds, and the terminal running it needs the Accessibility permission.
+**The real-time test** plays 40 notes with the real engine, the real clock and real Quartz key events into a small test app (`tools/key_receiver.js`) instead of Roblox. Another process doubles the speed at 2.1 s, transposes the song up 2 semitones at 3.1 s, pauses at 4.1 s and resumes at 5.6 s through the control file, as the window does. It then checks that every key pressed was let go, that notes were 0.25 s apart at 1× and 0.125 s at 2× (median within 5 ms, every note within 40 ms), that every note came on its key (with Shift where it needs it), 2 semitones higher once the transposition arrived, and that the pause was clean. It takes about ten seconds, and the terminal running it needs the Accessibility permission.
 
 ```bash
 tools/realtime_test.sh                                                          # the source
 tools/realtime_test.sh "$PWD/build/Roblox MIDI Piano Player.app/Contents/Resources/main.js"   # the app's copy
 ```
 
-**The window's self test** builds the real window and goes through it: it loads a song, switches modes and languages, transposes, sends real key and mouse events through the window with a recorder in place of Roblox (piano keys, Shift, a glissando, `/` and ⌘ shortcuts that must not pass, typing in a text field, ⌘ releasing held keys, Tab between fields), changes the speed, shows a song playing and paused from a stand-in state file, flips live keys off and on, shows the Accessibility hint, shows the uninstaller's list (and closes it without removing anything), and opens a demo from the menu. It saves a picture of the window after each step and a JSON report. Add `arm` to also start a real background player and stop it (it waits for Roblox, so nothing is played), and `idle` to leave the window alone for 20 s and report the CPU time it used.
+**The window's self test** builds the real window and goes through it: it loads a song, switches modes and languages, transposes, sends real key and mouse events through the window with a recorder in place of Roblox (piano keys, Shift, a glissando, `/` and ⌘ shortcuts that must not pass, typing in a text field, ⌘ releasing held keys, Tab between fields), changes the speed, shows a song playing and paused from a stand-in state file, transposes the playing song from the Playback menu (and checks that another song is left alone and that the playing one opens at its transposition), flips live keys off and on, shows the Accessibility hint, shows the uninstaller's list (and closes it without removing anything), and opens a demo from the menu. It saves a picture of the window after each step and a JSON report. Add `arm` to also start a real background player and stop it (it waits for Roblox, so nothing is played), and `idle` to leave the window alone for 20 s and report the CPU time it used.
 
 ```bash
 ./build.sh
@@ -122,7 +122,7 @@ python3 tools/shrink_icns.py app/AppIcon.icns
 
 ```bash
 ./build.sh --zip
-gh release create v2.2.0 build/Roblox-MIDI-Piano-Player-2.2.0.zip --title "Roblox MIDI Piano Player 2.2.0" --notes-file notes.md
+gh release create v2.3.0 build/Roblox-MIDI-Piano-Player-2.3.0.zip --title "Roblox MIDI Piano Player 2.3.0" --notes-file notes.md
 ```
 
 ## 8. The CI check

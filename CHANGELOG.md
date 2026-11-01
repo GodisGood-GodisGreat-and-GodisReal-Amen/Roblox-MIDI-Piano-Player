@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0 — 2026-11-01
+
+**Live transposition.** **Transpose this song** now works while the song plays, like the speed. Pick another value in the pop-up, or press **⌘↑** / **⌘↓** (**Playback › Transpose Up** / **Transpose Down**, and **No Transposition** to go back), and the player moves the rest of the song to the new keys within a tenth of a second, from the next note. Nothing jumps and the tempo does not move; notes already sounding ring on. Notes that were outside the piano come in when the new key brings them within it, even in the middle of a rest, and notes it pushes outside are skipped. A change made while the song is armed applies from the first note, and one made while it is paused from the note it resumes on. The status card shows the transposition in force (*+2 semitones*), and opening the playing song again shows it in the pop-up. Only the song that plays is moved: transposing another song you loaded meanwhile leaves it alone.
+
+- The song handed to the background player now carries the piano's key map and the notes that fall outside the piano, so the player can map the notes ahead again by itself.
+- *+1 semitone* instead of *+1 semitones*, in English and in French.
+- Tests: the engine harness checks live transposition (up and down, notes coming into the piano and leaving it, during a rest, while paused, while armed, an older job without a key map, the job file); the real-time test transposes its song at 3.1 s and checks the key of every note the test app receives; the window self test transposes the playing song from the Playback menu.
+
 ## 2.2.0 — 2026-10-28
 
 **Uninstaller.** **Roblox MIDI Piano Player › Uninstall Roblox MIDI Piano Player…** removes the app and everything it ever left on the Mac, so nothing is left when you want the space back: this app and every other copy of any version back to 1.0 (found by both of the app's bundle identifiers and by name, in Applications, Downloads, Desktop and Documents, and wherever Spotlight or macOS knows of one), downloaded archives of it, the folder the first version's source came in, the settings folder with its logs and old song files, the files macOS keeps for the app, and its Accessibility permission. It shows the list with sizes first, **Cancel** is the default, and everything goes to the Trash unless you tick **Delete right away**. A song that is playing is stopped and other open copies are closed first. Only those kinds of item are touched: a folder of yours that holds a copy keeps everything else. From Terminal, `--uninstall` lists, `--uninstall --yes` removes.

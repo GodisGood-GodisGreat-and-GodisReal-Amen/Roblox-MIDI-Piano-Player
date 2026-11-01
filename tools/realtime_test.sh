@@ -1,9 +1,10 @@
 #!/bin/bash
 # Plays a short song with the REAL playback engine into a small test app
-# (tools/key_receiver.js) instead of Roblox, doubles the speed and pauses it
-# from another process, then checks what the test app received:
+# (tools/key_receiver.js) instead of Roblox, doubles the speed, transposes it
+# and pauses it from another process, then checks what the test app received:
 #   - every key pressed was also let go;
 #   - notes 0.25 s apart at 1x, then 0.125 s apart after the speed change;
+#   - the right key for every note, 2 semitones higher once transposed at 3.1 s;
 #   - a clean 1.5 s pause with no key pressed, then the same spacing again.
 #
 #   tools/realtime_test.sh                 tests src/main.js
@@ -63,9 +64,33 @@ if not 1.45 <= pause <= 1.8:
 during = [t for t in downs if 4.3 < t < 5.55]
 if during:
     problems.append("%d key(s) pressed during the pause" % len(during))
+# Note n is MIDI 60 + n % 5 (C4 to E4 on key 1 = C2): its key and whether
+# Shift is down, untransposed, and 2 semitones up once the transposition
+# written at 3.1 s has reached the player (it looks every 0.1 s). Shift's own
+# events carry its state in their flags; the other keys' events do not.
+KEYS = {60: (17, False), 61: (17, True), 62: (16, False), 63: (16, True), 64: (32, False), 65: (34, False), 66: (34, True)}
+shift = False
+pressed = []
+for e in events:
+    if e["type"] == 12 and e["code"] == 56:
+        shift = bool(e.get("flags", 0) & (1 << 17))
+    elif e["type"] == 10:
+        pressed.append((e["wall"] - run["start"], e["code"], shift))
+wrong = []
+for n, (t, code, shifted) in enumerate(pressed):
+    note = 60 + n % 5
+    allowed = ([KEYS[note]] if t < 3.25 else []) + ([KEYS[note + 2]] if t > 3.1 else [])
+    if (code, shifted) not in allowed:
+        wrong.append("note %d at %.3f s: key %d%s" % (n + 1, t, code, "+shift" if shifted else ""))
+transposed = len([1 for n, (t, code, shifted) in enumerate(pressed) if t > 3.1 and (code, shifted) == KEYS[60 + n % 5 + 2]])
+if wrong:
+    problems.append("wrong keys: " + "; ".join(wrong[:4]))
+if transposed < 10:
+    problems.append("only %d notes were transposed" % transposed)
 print("keys: %d pressed, %d released" % (len(downs), len(ups)))
 print("1x:   median %.3f s apart (%s ...)" % (median(before), ", ".join("%.3f" % g for g in before[:5])))
 print("2x:   median %.3f s apart (%s ...)" % (median(after), ", ".join("%.3f" % g for g in after[:5])))
+print("transposed +2 at 3.1 s: %d notes on the keys 2 semitones up, %d on a wrong key" % (transposed, len(wrong)))
 print("pause: %.3f s" % pause)
 if problems:
     print("FAIL: " + "; ".join(problems))

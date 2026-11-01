@@ -10,7 +10,7 @@ Everything in the window, in the order you meet it. Shortcuts are written for a 
 4. [Reading the piano picture](#4-reading-the-piano-picture)
 5. [Settings](#5-settings)
 6. [Playing a song](#6-playing-a-song)
-7. [While it plays: speed, pause, stop](#7-while-it-plays-speed-pause-stop)
+7. [While it plays: speed, transposition, pause, stop](#7-while-it-plays-speed-transposition-pause-stop)
 8. [Live keys](#8-live-keys)
 9. [Menus and keyboard shortcuts](#9-menus-and-keyboard-shortcuts)
 10. [Language, notifications and the log](#10-language-notifications-and-the-log)
@@ -19,7 +19,7 @@ Everything in the window, in the order you meet it. Shortcuts are written for a 
 
 ## 1. The window
 
-![The window playing a song at 1.30×, with a chord held on the live keys](images/window-en.png)
+![The window playing a song at 1.30×, transposed up 2 semitones, with a chord held on the live keys](images/window-en.png)
 
 From top to bottom:
 
@@ -40,7 +40,7 @@ The window opens where you left it.
 
 The song's line then says how many notes it has, its lowest and highest note, how long it lasts at the current speed, and how long after your click it starts: *105 notes · G2 → D6 · about 1:12 at 1.00× · starts 0.5 s after your click*.
 
-**Transpose this song** moves this one song up or down by up to 12 semitones (an octave), without touching your settings. It goes back to *0 · none* when you load another song. Use it when a song sits a little too high or too low for the piano; if every song does, change **Note of key 1** instead ([section 5](#5-settings)).
+**Transpose this song** moves this one song up or down by up to 12 semitones (an octave), without touching your settings. It goes back to *0 · none* when you load another song. Use it when a song sits a little too high or too low for the piano; if every song does, change **Note of key 1** instead ([section 5](#5-settings)). It works while the song plays too ([section 7](#7-while-it-plays-speed-transposition-pause-stop)).
 
 Every track of the file is played, and tempo changes in the file are followed. Each note is held for its real length. Drum tracks (MIDI channel 10) are left out, because drum sounds are not notes: the song's line says how many drum hits were left out. A file whose only notes are on channel 10 is played as it is.
 
@@ -100,17 +100,18 @@ When it ends, the status reads *Finished "…"* for a quarter of an hour, then *
 
 **Return** presses **Arm playback** when it is available, as the window's default button.
 
-## 7. While it plays: speed, pause, stop
+## 7. While it plays: speed, transposition, pause, stop
 
 ![The status card while a song is paused at 0.90×](images/status-paused.png)
 
 - **−** and **+** slow the song down or speed it up by 0.05×, between 0.25× and 2×. The middle button shows the speed; click it to go back to 1×. The speed slider in the settings does the same.
 - The change is heard within a tenth of a second, from the note that is playing: nothing jumps, and nothing rushes to catch up. Notes still keep their written lengths at the new speed.
+- **Transpose this song** moves the song up or down while it plays: pick a value in the pop-up, or press **⌘↑** and **⌘↓** to go up or down a semitone (**Playback › No Transposition** goes back to *0 · none*). The rest of the song is heard at the new keys within a tenth of a second, from the next note, at the same tempo; notes already sounding ring on. Notes that were outside the piano come in when the new key brings them within it, and notes it pushes outside are skipped. The status card shows the transposition in force: *0:42 / 1:12 · 1.00× · +2 semitones · …*.
 - **Pause** lets go of every key and holds the song where it is; the dot turns yellow. **Resume** carries on from the same note. Pausing during the last notes ends the song.
 - **Stop** ends the song and lets go of every key, including Shift and Ctrl.
-- The speed you leave is saved: the next song starts at it.
+- The speed you leave is saved: the next song starts at it. The transposition belongs to the song: only the song that plays is moved, and opening it again in the window shows the transposition it plays at.
 
-You can change the speed before arming too, and while the song waits for your click.
+You can change the speed and the transposition before arming too, and while the song waits for your click.
 
 ## 8. Live keys
 
@@ -145,6 +146,8 @@ Live keys work while a song plays, so you can play along. Turn them off with the
 | | Stop | ⌘. |
 | | Faster / Slower (by 0.05×) | ⌘= / ⌘− |
 | | Normal Speed | ⌘0 |
+| | Transpose Up / Transpose Down (by a semitone) | ⌘↑ / ⌘↓ |
+| | No Transposition | |
 | | Live Keys (on or off) | ⌘L |
 | Window | Minimize | ⌘M |
 | Help | Roblox MIDI Piano Player Help (this manual, online) | ⌘? |

@@ -1,7 +1,8 @@
 // The real-time half of tools/realtime_test.sh: plays 40 notes with the REAL
 // playback engine (real clock, real Quartz key events) into the process given,
-// while another process doubles the speed at 2.1 s, pauses at 4.1 s and
-// resumes at 5.6 s through the control file, exactly as the window does.
+// while another process doubles the speed at 2.1 s, transposes the song up 2
+// semitones at 3.1 s, pauses at 4.1 s and resumes at 5.6 s through the control
+// file, exactly as the window does.
 //
 //   osascript -l JavaScript tools/realtime_test.js /path/to/main.js SUPPORT_DIR TARGET_PID DONE_FILE
 //
@@ -27,7 +28,7 @@ function run(argv) {
   playbackCfg.savedBaseMIDINote = 36;
   var built = buildSchedule(notes, [], 480, playbackCfg, profile);
   var job = { jobId: "realtime-test", supportDir: supportDir, songName: "realtime test", midiPath: "", createdAt: nowSeconds(), schedule: built.schedule, quiet: true };
-  writePlaybackControl(supportDir, { jobId: job.jobId, speed: 1, paused: false });
+  writePlaybackControl(supportDir, { jobId: job.jobId, speed: 1, paused: false, transpose: 0 });
 
   // The "window": a shell that rewrites the control file on a timer.
   var control = supportDir + "/" + PLAYBACK_CONTROL_FILE;
@@ -35,9 +36,10 @@ function run(argv) {
     return "printf '%s' " + shellQuote(json) + " > " + shellQuote(control + ".tmp") + " && mv " + shellQuote(control + ".tmp") + " " + shellQuote(control);
   }
   var script = [
-    "sleep 2.1", write('{"jobId":"realtime-test","speed":2,"paused":false}'),
-    "sleep 2.0", write('{"jobId":"realtime-test","speed":2,"paused":true}'),
-    "sleep 1.5", write('{"jobId":"realtime-test","speed":2,"paused":false}')
+    "sleep 2.1", write('{"jobId":"realtime-test","speed":2,"paused":false,"transpose":0}'),
+    "sleep 1.0", write('{"jobId":"realtime-test","speed":2,"paused":false,"transpose":2}'),
+    "sleep 1.0", write('{"jobId":"realtime-test","speed":2,"paused":true,"transpose":2}'),
+    "sleep 1.5", write('{"jobId":"realtime-test","speed":2,"paused":false,"transpose":2}')
   ].join("; ");
   var task = $.NSTask.alloc.init;
   task.setLaunchPath($("/bin/sh"));

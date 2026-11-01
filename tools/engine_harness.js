@@ -1,5 +1,6 @@
 // Offline test of the playback engine: the 61- and 88-key maps, chords,
-// modifiers, live speed and pause, all on a virtual clock (it takes a second).
+// modifiers, live speed, pause and transposition, all on a virtual clock (it
+// takes a second).
 //
 //   osascript -l JavaScript tools/engine_harness.js "$PWD/src/main.js"
 //
@@ -229,7 +230,8 @@ function run(argv) {
 
   // ---- test 11-16: live speed and pause (v2.1.0) ---------------------------
   // The control file is replaced by a script of changes on the virtual clock:
-  // [{ at: secondsAfterStart, speed, paused, jobId }]. The worker polls it.
+  // [{ at: secondsAfterStart, speed, paused, transpose, jobId }]. The worker
+  // polls it.
   var controlScript = [];
   var runStart = 0;
   readPlaybackControl = function() {
@@ -238,19 +240,21 @@ function run(argv) {
       if (clock - runStart >= controlScript[cs].at) current = controlScript[cs];
     }
     if (!current) return { jobId: "h", speed: 1, paused: false };
-    return { jobId: current.jobId || "h", speed: current.speed, paused: !!current.paused };
+    return { jobId: current.jobId || "h", speed: current.speed, paused: !!current.paused, transpose: current.transpose };
   };
-  function playLive(notes, script) {
+  // `mutate` may change or replace the schedule before it is played.
+  function playLive(notes, script, mutate) {
     controlScript = script || [];
     var cfg = cfgFor("classic", "us");
     var profile = resolveKeyboardProfile(cfg);
     var pc = clone(cfg);
     pc.savedBaseMIDINote = 36;
     var built = buildSchedule(notes, [], 480, pc, profile);
+    var schedule = mutate ? mutate(built.schedule) : built.schedule;
     recorder = makeRecorder();
     clock = 100;
     runStart = clock;
-    performPlaybackToPid(built.schedule, 4242, "/tmp/harness", { jobId: "h" });
+    performPlaybackToPid(schedule, 4242, "/tmp/harness", { jobId: "h" });
     return { built: built, rec: recorder };
   }
   function pressTimes(rec) { return rec.presses.map(function(x) { return x.t - runStart; }); }
@@ -435,6 +439,87 @@ function run(argv) {
   var packedSize = JSON.stringify(packSchedule(packed)).length, objectSize = JSON.stringify(packed, null, 2).length;
   check(packedSize * 3 < objectSize, "packed job is at least 3 times smaller (" + packedSize + " vs " + objectSize + " bytes)");
 
+  // 25-33: live transposition (v2.3.0). The control script's `transpose` is
+  // the song's whole transposition, as the window writes it.
+  function keyOf(note, shift) {
+    var st = cls.steps[note - 36 + shift];
+    return st ? st.code + (st.shift ? "S" : "") : "none";
+  }
+  function pressKeys(rec) { return rec.presses.map(function(x) { return x.code + (x.shift ? "S" : ""); }); }
+  function steadyKeys(changeAt, shift) {
+    return steady.map(function(s, n) { return keyOf(s[1][0], n * 0.25 > changeAt ? shift : 0); });
+  }
+
+  // 25: up 2 semitones at 1.1 s: from the note at 1.25 s on, every key is 2
+  // semitones higher, and the tempo does not move.
+  var r25 = playLive(song(steady), [{ at: 1.1, speed: 1, transpose: 2 }]);
+  var t25 = pressTimes(r25.rec), k25 = pressKeys(r25.rec), want25 = steadyKeys(1.1, 2);
+  check(t25.length === 24 && k25.join() === want25.join(), "transpose +2: the notes after the change are 2 keys up (" + k25.slice(3, 8).join(",") + " vs " + want25.slice(3, 8).join(",") + ")");
+  var gaps25 = [];
+  for (var g25 = 1; g25 < t25.length; g25++) gaps25.push(t25[g25] - t25[g25 - 1]);
+  check(gaps25.every(function(x) { return near(x, 0.25, 0.01); }), "transpose +2: notes still 0.25 s apart (" + gaps25.slice(2, 7).map(function(x) { return x.toFixed(3); }).join(",") + ")");
+  check(Object.keys(r25.rec.down).length === 0 && !r25.rec.shift, "transpose +2: nothing left down at the end");
+
+  // 26: down 1 at 1.1 s brings C#7, above the classic piano, in as C7: after
+  // the change every note plays. The state says so.
+  var edge = [];
+  for (var e26 = 0; e26 < 16; e26++) edge.push([e26 * 240, [e26 % 2 ? 97 : 96], 120]);
+  var states26 = [];
+  savePlaybackState = function(dir, st) { states26.push(clone(st)); };
+  var r26 = playLive(song(edge), [{ at: 1.1, speed: 1, transpose: -1 }]);
+  savePlaybackState = function() {};
+  var k26 = pressKeys(r26.rec), want26 = [];
+  edge.forEach(function(s, n) { var k = keyOf(s[1][0], n * 0.25 > 1.1 ? -1 : 0); if (k !== "none") want26.push(k); });
+  check(r26.built.mapped === 8 && r26.built.skippedHigh === 8 && r26.built.schedule.skippedEvents.length === 8, "edge song: 8 notes fit, 8 kept aside (" + r26.built.mapped + "/" + r26.built.schedule.skippedEvents.length + ")");
+  check(k26.length === 14 && k26.join() === want26.join(), "transpose −1: the C#7s come in, every note plays after the change (" + k26.length + " presses)");
+  var last26 = states26[states26.length - 1];
+  check(last26 && last26.transpose === -1 && last26.progressEvents === 14 && last26.totalEvents === 14, "transpose −1: the state reports −1 and 14 of 14 notes (" + (last26 ? [last26.transpose, last26.progressEvents, last26.totalEvents].join("/") : "?") + ")");
+
+  // 27: up 1 at 1.1 s pushes C7 above the piano too: nothing plays after it.
+  var r27 = playLive(song(edge), [{ at: 1.1, speed: 1, transpose: 1 }]);
+  check(r27.rec.presses.length === 3 && Object.keys(r27.rec.down).length === 0, "transpose +1: notes pushed above the piano are skipped (" + r27.rec.presses.length + " presses)");
+
+  // 28: in a long rest, notes outside the piano that a transposition brings
+  // in are played at their own time. D7 (98) is above the classic piano.
+  var gapSong = song([[0, [60], 120], [960, [98], 120], [1440, [98], 120], [3840, [62], 120]]);
+  var r28 = playLive(gapSong, [{ at: 0.5, speed: 1, transpose: -2 }]);
+  var t28 = pressTimes(r28.rec), k28 = pressKeys(r28.rec);
+  check(t28.length === 4 && near(t28[1], 1.0, 0.02) && near(t28[2], 1.5, 0.02) && near(t28[3], 4.0, 0.02), "rest: notes brought in by transposing play at 1.0 and 1.5 s (" + t28.map(function(x) { return x.toFixed(3); }).join(", ") + ")");
+  check(k28.join() === [keyOf(60, 0), keyOf(98, -2), keyOf(98, -2), keyOf(62, -2)].join(), "rest: and on the right keys (" + k28.join(",") + ")");
+
+  // 29: a transposition made during a pause is heard from the resumed note.
+  var r29 = playLive(song(steady), [{ at: 1.1, speed: 1, paused: true }, { at: 2.0, speed: 1, paused: true, transpose: 3 }, { at: 3.1, speed: 1, paused: false, transpose: 3 }]);
+  var t29 = pressTimes(r29.rec), k29 = pressKeys(r29.rec), want29 = steadyKeys(1.1, 3);
+  check(t29.length === 24 && near(t29[5], 3.25, 0.06) && k29.join() === want29.join(), "pause: the transposition made while paused starts at the resumed note (" + k29[5] + " at " + (t29[5] || 0).toFixed(3) + " s)");
+
+  // 30: a transposition chosen while the song was armed applies from the start.
+  var r30 = playLive(song(steady), [{ at: 0, speed: 1, transpose: 5 }]);
+  check(pressKeys(r30.rec).join() === steadyKeys(-1, 5).join(), "armed at +5: every note is 5 keys up (" + pressKeys(r30.rec).slice(0, 3).join(",") + ")");
+
+  // 31: where a moved song starts again (after the chord just pressed, from
+  // the position), and every note of a schedule in order.
+  var fn31 = [{ t: 0.5 }, { t: 0.502 }, { t: 1.0 }, { t: 1.0 }, { t: 2.0 }];
+  check(firstNoteIndexFrom(fn31, 0.49, 0.506) === 2 && firstNoteIndexFrom(fn31, 0.49, -1) === 0 && firstNoteIndexFrom(fn31, 1.0, 0.506) === 2 && firstNoteIndexFrom(fn31, 1.5, -1) === 4 && firstNoteIndexFrom(fn31, 3, -1) === 5, "a moved song starts after the chord just pressed and at the position");
+  var merged31 = mergeScheduleNotes(r26.built.schedule);
+  check(merged31.map(function(x) { return x.sourceMIDINote; }).join() === edge.map(function(s) { return s[1][0]; }).join(), "every note of the schedule comes back in order (" + merged31.length + ")");
+
+  // 32: a job from an older window has no key map: the song stays where it is.
+  log.length = 0;
+  var r32 = playLive(song(steady), [{ at: 1.1, speed: 1, transpose: 2 }], function(s) { delete s.keyMap; delete s.skippedEvents; return s; });
+  check(pressKeys(r32.rec).join() === steadyKeys(-1, 0).join() && log.some(function(l) { return l.indexOf("cannot be transposed") >= 0; }), "a job without a key map plays as it was armed, and says so in the log");
+
+  // 33: the job file carries the key map and the notes outside the piano, and
+  // a song read back from it moves exactly as the original.
+  var edgeBuilt = r26.built.schedule;
+  var rt33 = unpackSchedule(JSON.parse(JSON.stringify(packSchedule(edgeBuilt))));
+  var skippedSame = rt33.skippedEvents.length === edgeBuilt.skippedEvents.length && rt33.skippedEvents.every(function(x, n) {
+    var y = edgeBuilt.skippedEvents[n];
+    return Math.abs(x.t - y.t) < 0.0000006 && Math.abs(x.dur - y.dur) < 0.0000006 && x.sourceMIDINote === y.sourceMIDINote;
+  });
+  check(skippedSame && JSON.stringify(rt33.keyMap) === JSON.stringify(edgeBuilt.keyMap) && rt33.transpose === 0, "the job file keeps the notes outside the piano, the key map and the transposition");
+  var r33 = playLive(song(edge), [{ at: 1.1, speed: 1, transpose: -1 }], function(s) { return unpackSchedule(JSON.parse(JSON.stringify(packSchedule(s)))); });
+  check(pressKeys(r33.rec).join() === k26.join(), "a song read back from the job file moves the same way (" + pressKeys(r33.rec).length + " presses)");
+
   var out = ["Engine harness: " + (failures.length === 0 ? "ALL CHECKS PASSED" : failures.length + " FAILURE(S)")];
   for (var f = 0; f < failures.length; f++) out.push("  FAIL: " + failures[f]);
   out.push("  sweep timeline: first press t=" + (r3.rec.presses[0].t - 100).toFixed(3) + "s, last press t=" + (r3.rec.presses[87].t - 100).toFixed(3) + "s (scheduled 0.000 .. " + ((87 * 120) / 480 * 0.5).toFixed(3) + "s)");
@@ -442,6 +527,8 @@ function run(argv) {
   out.push("  live speed x2 at 2.1s: notes at " + t11.slice(6, 13).map(function(x) { return x.toFixed(3); }).join(", ") + " s");
   out.push("  pause 1.1s-4.1s: notes at " + t13.slice(3, 8).map(function(x) { return x.toFixed(3); }).join(", ") + " s");
   out.push("  speed x2 during a rest: second note at " + t14[1].toFixed(3) + " s (was 4.000)");
+  out.push("  transpose +2 at 1.1s: keys " + k25.slice(3, 8).join(", ") + " (notes at 0.75 .. 1.75 s)");
+  out.push("  transpose -2 in a rest: notes brought in at " + t28.slice(1, 3).map(function(x) { return x.toFixed(3); }).join(", ") + " s");
   // A failure must make osascript exit with an error, so scripts and the CI
   // check stop on it.
   if (failures.length > 0) throw new Error(out.join("\n"));

@@ -15,6 +15,8 @@ Play a song
 While it plays
   - The - and + buttons (or Command - and Command =) slow the song down or
     speed it up on the spot; the middle button puts it back to 1x.
+  - "Transpose this song" (or Command Up / Command Down) moves the song up
+    or down by semitones from the next note.
   - Pause (Command P) holds the song where it is; Resume carries on.
   - Stop (Command .) ends it and lets go of every key.
 
